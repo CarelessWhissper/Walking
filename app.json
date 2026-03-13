@@ -9,17 +9,28 @@
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "This app needs access to location to track your runs.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "This app needs access to location to track your runs.",
+        "NSLocationAlwaysUsageDescription": "This app needs access to location to track your runs even in background."
+      }
     },
     "android": {
+      "permissions": [
+        "ACCESS_COARSE_LOCATION", 
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION"
+      ],
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "edgeToEdgeEnabled": false,
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.track"
     },
     "web": {
       "output": "static",
@@ -27,6 +38,16 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow track to use your location for tracking runs.",
+          "locationAlwaysPermission": "Allow track to use your location even when background tracking is enabled.",
+          "locationWhenInUsePermission": "Allow track to use your location while the app is open.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true
+        }
+      ],
       [
         "expo-splash-screen",
         {
