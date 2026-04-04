@@ -1,12 +1,9 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
-  Platform,
   StyleSheet,
   View,
   Text,
   TouchableOpacity,
-  ScrollView,
-  Dimensions,
   Alert,
   StatusBar,
   LogBox,
@@ -25,16 +22,19 @@ import {
 } from "@maplibre/maplibre-react-native";
 import * as Location from "expo-location";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Theme } from "@/constants/theme";
+import { DARK_MAP_STYLE, DARK_MAP_STYLE_RASTER } from "@/config/mapStyle";
+import { useCadenceTracker } from "@/hooks/useCadenceTracker";
+import { estimateCalories, DEFAULT_WEIGHT_KG } from "@/config/calories";
+import { useOfflineMap } from "@/hooks/useOfflineMap";
+import { ShareCard, ShareCardData } from "@/components/ShareCard";
+import { useShareRun } from "@/hooks/useShareRun";
 
-// Ignore specific MapLibre warnings
 LogBox.ignoreLogs([
   "Request failed due to a permanent error: Canceled",
   "Mbgl-HttpRequest",
 ]);
 
-const { width } = Dimensions.get("window");
-
-// Types for MapLibre GeoJSON
 interface RouteGeoJSON {
   type: "Feature";
   properties: Record<string, never>;
@@ -45,9 +45,10 @@ interface RouteGeoJSON {
 }
 
 export default function HomeScreen() {
-  const [showDebug, setShowDebug] = useState<boolean>(false);
-  const [permissionGranted, setPermissionGranted] = useState<boolean>(false);
+  const [permissionGranted, setPermissionGranted] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
+  const [useRasterFallback, setUseRasterFallback] = useState(false);
+  const [userWeight, setUserWeight] = useState(DEFAULT_WEIGHT_KG);
   const cameraRef = useRef<CameraRef>(null);
 
   const {
@@ -67,23 +68,60 @@ export default function HomeScreen() {
     distanceInterval: 5,
   });
 
-  // Request permissions on mount
+  const { cadence, stepCount } = useCadenceTracker(isTracking);
+  const { isDownloading, progress, hasOfflinePack, downloadArea } = useOfflineMap();
+  const calories = estimateCalories(distance, elapsedTime, userWeight);
+  const { cardRef, share, isSharing } = useShareRun();
+
+  // Build share card data from current run state
+  const shareData: ShareCardData = useMemo(() => ({
+    distance: distance >= 1000
+      ? (distance / 1000).toFixed(2)
+      : `0.${Math.round(distance).toString().padStart(3, "0")}`,
+    duration: (() => {
+      const hrs = Math.floor(elapsedTime / 3600);
+      const mins = Math.floor((elapsedTime % 3600) / 60);
+      const secs = elapsedTime % 60;
+      if (hrs > 0) return `${hrs}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+      return `${mins}:${secs.toString().padStart(2, "0")}`;
+    })(),
+    pace,
+    date: new Date().toLocaleDateString("en-US", {
+      weekday: "long",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }),
+    calories,
+    cadence,
+  }), [distance, elapsedTime, pace, calories, cadence]);
+
+  // Load user weight preference
+  useEffect(() => {
+    (async () => {
+      const saved = await AsyncStorage.getItem("userWeight");
+      if (saved) setUserWeight(parseFloat(saved));
+    })();
+  }, []);
+
   useEffect(() => {
     (async () => {
       const { status } = await Location.requestForegroundPermissionsAsync();
       setPermissionGranted(status === "granted");
-      if (status !== "granted") {
-        Alert.alert(
-          "Permission Required",
-          "Location permission is needed to track your runs.",
-          [{ text: "OK" }],
-        );
+      if (status === "granted" && !hasOfflinePack) {
+        // Auto-cache tiles around current location
+        try {
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.LocationAccuracy.Balanced });
+          downloadArea(loc.coords.latitude, loc.coords.longitude);
+        } catch {
+          // silent fail - online tiles still work
+        }
       }
     })();
   }, []);
 
   const saveRun = useCallback(async () => {
-    if (locations.length < 10) return; // Don't save very short runs
+    if (locations.length < 10) return;
 
     try {
       const existingRuns = await AsyncStorage.getItem("runs");
@@ -92,21 +130,22 @@ export default function HomeScreen() {
       const newRun = {
         id: Date.now().toString(),
         date: new Date().toISOString(),
-        distance: distance,
+        distance,
         duration: elapsedTime,
-        pace: pace,
-        locations: locations.slice(-100), // Save last 100 points for map preview
+        pace,
+        calories,
+        cadence,
+        stepCount,
+        locations: locations.slice(-100),
       };
 
       runs.push(newRun);
       await AsyncStorage.setItem("runs", JSON.stringify(runs));
-
-      // Optional: Show confirmation
       Alert.alert("Run Saved", "Your run has been saved to history.");
-    } catch (error) {
-      console.error("Error saving run:", error);
+    } catch (err) {
+      console.error("Error saving run:", err);
     }
-  }, [distance, elapsedTime, pace, locations]);
+  }, [distance, elapsedTime, pace, calories, cadence, stepCount, locations]);
 
   const handleStopTracking = useCallback(async () => {
     await stopTracking();
@@ -114,15 +153,17 @@ export default function HomeScreen() {
   }, [stopTracking, saveRun]);
 
   const formatTime = (seconds: number): string => {
-    const mins = Math.floor(seconds / 60);
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
     const secs = seconds % 60;
+    if (hrs > 0) {
+      return `${hrs}:${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+    }
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
-  // Convert locations to GeoJSON format for MapLibre
   const routeGeoJSON = (): RouteGeoJSON | null => {
     if (locations.length < 2) return null;
-
     return {
       type: "Feature",
       properties: {},
@@ -136,7 +177,6 @@ export default function HomeScreen() {
     };
   };
 
-  // Follow user location when tracking using Camera ref
   useEffect(() => {
     if (isTracking && locations.length > 0 && cameraRef.current) {
       const lastLoc = locations[locations.length - 1];
@@ -144,31 +184,30 @@ export default function HomeScreen() {
         centerCoordinate: [lastLoc.longitude, lastLoc.latitude],
         zoomLevel: 16,
         animationDuration: 1000,
-        // animationMode is now optional, defaults to CameraMode.None
       });
     }
   }, [locations, isTracking]);
 
   const routeData = routeGeoJSON();
+  const mapStyle = useRasterFallback ? DARK_MAP_STYLE_RASTER : DARK_MAP_STYLE;
 
   if (!permissionGranted) {
     return (
       <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+        <StatusBar barStyle="light-content" backgroundColor={Theme.bg} />
         <View style={styles.centerContainer}>
-          <Icon name="map-marker-off" size={64} color="#E74C3C" />
+          <Icon name="map-marker-off" size={56} color={Theme.textMuted} />
           <Text style={styles.permissionText}>
-            Location permission is required to track runs.
+            Location access needed to track runs
           </Text>
           <TouchableOpacity
             style={styles.permissionButton}
             onPress={async () => {
-              const { status } =
-                await Location.requestForegroundPermissionsAsync();
+              const { status } = await Location.requestForegroundPermissionsAsync();
               setPermissionGranted(status === "granted");
             }}
           >
-            <Text style={styles.permissionButtonText}>Grant Permission</Text>
+            <Text style={styles.permissionButtonText}>Enable Location</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -177,222 +216,184 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
-      <ScrollView
-        contentContainerStyle={styles.scrollContainer}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Header */}
-        <View style={styles.header}>
-          <Icon name="run" size={32} color="#2C3E50" />
-          <Text style={styles.headerTitle}>tracker</Text>
-          <TouchableOpacity
-            onPress={() => setShowDebug(!showDebug)}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <Icon
-              name={showDebug ? "code-braces" : "code-braces"}
-              size={24}
-              color="#95A5A6"
-            />
-          </TouchableOpacity>
-        </View>
+      <StatusBar barStyle="light-content" backgroundColor={Theme.bg} />
 
-        {/* Map with v10+ API */}
-        <View style={styles.mapContainer}>
-          <MapView
-            style={styles.map}
-            mapStyle="https://demotiles.maplibre.org/style.json" // styleURL is now mapStyle
-            attributionEnabled={false}
-            logoEnabled={false}
-            onDidFinishLoadingMap={() => {
-              console.log("Map loaded successfully");
-              setMapError(null);
-            }}
-          >
-            {/* Camera for controlling view - with explicit animation settings */}
-            <Camera
-              ref={cameraRef}
-              followUserLocation={isTracking}
-              followZoomLevel={16}
-              animationDuration={1000}
-              animationMode="easeTo" // Explicitly set animation mode
-              minZoomLevel={5}
-              maxZoomLevel={20}
-            />
-
-            {/* User location dot */}
-            <UserLocation visible={true} showsUserHeadingIndicator={true} />
-
-            {/* Running route */}
-            {routeData && (
-              <ShapeSource id="routeSource" shape={routeData}>
-                <LineLayer
-                  id="routeLine"
-                  style={{
-                    lineColor: "#E74C3C",
-                    lineWidth: 4,
-                    lineCap: "round",
-                    lineJoin: "round",
-                  }}
-                />
-              </ShapeSource>
-            )}
-          </MapView>
-
-          {/* Map error overlay */}
-          {mapError && (
-            <View style={styles.mapErrorOverlay}>
-              <Icon name="map-outline" size={20} color="#E74C3C" />
-              <Text style={styles.mapErrorText}>{mapError}</Text>
-            </View>
+      {/* Map */}
+      <View style={styles.mapContainer}>
+        <MapView
+          style={styles.map}
+          mapStyle={mapStyle as any}
+          attributionEnabled={false}
+          logoEnabled={false}
+          onDidFinishLoadingMap={() => setMapError(null)}
+          onDidFailLoadingMap={() => {
+            if (!useRasterFallback) {
+              setUseRasterFallback(true);
+            } else {
+              setMapError("Map unavailable");
+            }
+          }}
+        >
+          <Camera
+            ref={cameraRef}
+            followUserLocation={isTracking}
+            followZoomLevel={16}
+            animationDuration={1000}
+            animationMode="easeTo"
+            minZoomLevel={5}
+            maxZoomLevel={20}
+          />
+          <UserLocation visible={true} showsUserHeadingIndicator={true} />
+          {routeData && (
+            <ShapeSource id="routeSource" shape={routeData}>
+              <LineLayer
+                id="routeLine"
+                style={{
+                  lineColor: Theme.accent,
+                  lineWidth: 4,
+                  lineCap: "round",
+                  lineJoin: "round",
+                }}
+              />
+            </ShapeSource>
           )}
+        </MapView>
 
-          {/* Status indicator */}
-          <View style={styles.mapStatus}>
-            <View
-              style={[
-                styles.statusDot,
-                isTracking ? styles.activeDot : styles.inactiveDot,
-              ]}
-            />
-            <Text style={styles.statusText}>
-              {isTracking ? "recording" : "paused"}
-            </Text>
+        {mapError && (
+          <View style={styles.mapErrorOverlay}>
+            <Text style={styles.mapErrorText}>{mapError}</Text>
           </View>
+        )}
+
+        {/* Status pill */}
+        <View style={[styles.statusPill, isTracking && styles.statusPillActive]}>
+          <View style={[styles.statusDot, isTracking && styles.statusDotActive]} />
+          <Text style={[styles.statusText, isTracking && styles.statusTextActive]}>
+            {isTracking ? "recording" : "ready"}
+          </Text>
         </View>
 
-        {/* Stats Cards */}
-        <View style={styles.statsGrid}>
-          <View style={styles.statCard}>
-            <Icon name="clock-outline" size={20} color="#7F8C8D" />
-            <Text style={styles.statValue}>{formatTime(elapsedTime)}</Text>
-            <Text style={styles.statLabel}>time</Text>
+        {/* Offline indicator */}
+        {isDownloading && (
+          <View style={styles.offlinePill}>
+            <Icon name="download" size={12} color={Theme.accent} />
+            <Text style={styles.offlineText}>caching {progress}%</Text>
           </View>
+        )}
+        {hasOfflinePack && !isDownloading && (
+          <View style={styles.offlinePill}>
+            <Icon name="check-circle" size={12} color={Theme.accent} />
+            <Text style={styles.offlineText}>offline ready</Text>
+          </View>
+        )}
+      </View>
 
-          <View style={styles.statCard}>
-            <Icon name="map-marker-distance" size={20} color="#7F8C8D" />
+      {/* Stats */}
+      <View style={styles.statsContainer}>
+        {/* Primary stat - time */}
+        <View style={styles.primaryStat}>
+          <Text style={styles.primaryValue}>{formatTime(elapsedTime)}</Text>
+          <Text style={styles.primaryLabel}>duration</Text>
+        </View>
+
+        {/* Secondary stats row */}
+        <View style={styles.secondaryStats}>
+          <View style={styles.stat}>
             <Text style={styles.statValue}>{formattedDistance || "0m"}</Text>
             <Text style={styles.statLabel}>distance</Text>
           </View>
-
-          <View style={styles.statCard}>
-            <Icon name="speedometer" size={20} color="#7F8C8D" />
+          <View style={styles.statDivider} />
+          <View style={styles.stat}>
             <Text style={styles.statValue}>{pace}</Text>
             <Text style={styles.statLabel}>pace</Text>
           </View>
-
-          <View style={styles.statCard}>
-            <Icon name="lightning-bolt" size={20} color="#7F8C8D" />
+          <View style={styles.statDivider} />
+          <View style={styles.stat}>
             <Text style={styles.statValue}>{averageSpeed.toFixed(1)}</Text>
             <Text style={styles.statLabel}>km/h</Text>
           </View>
         </View>
 
-        {/* Additional Info */}
-        <View style={styles.infoRow}>
-          <Icon name="map-marker-path" size={16} color="#95A5A6" />
-          <Text style={styles.infoText}>
-            {locations.length} point{locations.length !== 1 ? "s" : ""} recorded
-          </Text>
+        {/* Tertiary stats - cadence & calories */}
+        <View style={styles.tertiaryStats}>
+          <View style={styles.tertiaryStat}>
+            <Icon name="shoe-print" size={14} color={Theme.textMuted} />
+            <Text style={styles.tertiaryValue}>
+              {cadence > 0 ? cadence : "—"}
+            </Text>
+            <Text style={styles.tertiaryLabel}>spm</Text>
+          </View>
+          <View style={styles.tertiaryStat}>
+            <Icon name="fire" size={14} color={Theme.textMuted} />
+            <Text style={styles.tertiaryValue}>
+              {calories > 0 ? calories : "—"}
+            </Text>
+            <Text style={styles.tertiaryLabel}>kcal</Text>
+          </View>
+          <View style={styles.tertiaryStat}>
+            <Icon name="walk" size={14} color={Theme.textMuted} />
+            <Text style={styles.tertiaryValue}>
+              {stepCount > 0 ? stepCount : "—"}
+            </Text>
+            <Text style={styles.tertiaryLabel}>steps</Text>
+          </View>
         </View>
+      </View>
 
-        {/* Control Buttons */}
-        <View style={styles.controls}>
+      {/* Controls */}
+      <View style={styles.controls}>
+        {!isTracking && locations.length > 0 && (
           <TouchableOpacity
-            style={[styles.button, styles.resetButton]}
+            style={styles.secondaryButton}
             onPress={resetTracking}
             activeOpacity={0.7}
-            disabled={isTracking}
           >
-            <Icon
-              name="refresh"
-              size={20}
-              color={isTracking ? "#BDC3C7" : "#7F8C8D"}
-            />
+            <Icon name="refresh" size={22} color={Theme.textSecondary} />
           </TouchableOpacity>
+        )}
 
+        <TouchableOpacity
+          style={[
+            styles.mainButton,
+            isTracking ? styles.stopButton : styles.startButton,
+          ]}
+          onPress={isTracking ? handleStopTracking : startTracking}
+          activeOpacity={0.8}
+        >
+          <Icon
+            name={isTracking ? "stop" : "play"}
+            size={32}
+            color={isTracking ? Theme.white : Theme.bg}
+          />
+        </TouchableOpacity>
+
+        {!isTracking && locations.length > 0 && (
           <TouchableOpacity
-            style={[
-              styles.button,
-              styles.mainButton,
-              isTracking ? styles.stopButton : styles.startButton,
-            ]}
-            onPress={isTracking ? handleStopTracking : startTracking}
+            style={styles.secondaryButton}
+            onPress={share}
+            disabled={isSharing}
             activeOpacity={0.7}
           >
             <Icon
-              name={isTracking ? "stop" : "play"}
-              size={24}
-              color="#FFFFFF"
+              name="share-variant"
+              size={22}
+              color={isSharing ? Theme.textMuted : Theme.accent}
             />
-            <Text style={styles.mainButtonText}>
-              {isTracking ? "stop" : "start"}
-            </Text>
           </TouchableOpacity>
+        )}
+      </View>
 
-          <View style={styles.buttonPlaceholder} />
+      {/* Offscreen share card for capture */}
+      <View style={styles.offscreen} pointerEvents="none">
+        <ShareCard ref={cardRef} data={shareData} />
+      </View>
+
+      {/* Error */}
+      {error && (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>{error}</Text>
         </View>
-
-        {/* Error Display */}
-        {error && (
-          <View style={styles.errorContainer}>
-            <Icon name="alert-circle" size={16} color="#E74C3C" />
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        )}
-
-        {/* Debug Section */}
-        {showDebug && (
-          <View style={styles.debugContainer}>
-            <Text style={styles.debugTitle}>debug info</Text>
-
-            <View style={styles.debugRow}>
-              <Text style={styles.debugLabel}>tracking active:</Text>
-              <Text style={styles.debugValue}>{isTracking.toString()}</Text>
-            </View>
-
-            <View style={styles.debugRow}>
-              <Text style={styles.debugLabel}>raw distance (m):</Text>
-              <Text style={styles.debugValue}>{distance.toFixed(2)}</Text>
-            </View>
-
-            <View style={styles.debugRow}>
-              <Text style={styles.debugLabel}>raw time (s):</Text>
-              <Text style={styles.debugValue}>{elapsedTime}</Text>
-            </View>
-
-            <View style={styles.debugRow}>
-              <Text style={styles.debugLabel}>points recorded:</Text>
-              <Text style={styles.debugValue}>{locations.length}</Text>
-            </View>
-
-            {locations.length > 0 && (
-              <>
-                <View style={styles.debugRow}>
-                  <Text style={styles.debugLabel}>last point:</Text>
-                  <Text style={styles.debugValue}>
-                    {locations[locations.length - 1].latitude.toFixed(4)},
-                    {locations[locations.length - 1].longitude.toFixed(4)}
-                  </Text>
-                </View>
-
-                {locations[locations.length - 1].speed != null && (
-                  <View style={styles.debugRow}>
-                    <Text style={styles.debugLabel}>current speed:</Text>
-                    <Text style={styles.debugValue}>
-                      {(
-                        (locations[locations.length - 1].speed ?? 0) * 3.6
-                      ).toFixed(1)}
-                      km/h
-                    </Text>
-                  </View>
-                )}
-              </>
-            )}
-          </View>
-        )}
-      </ScrollView>
+      )}
     </SafeAreaView>
   );
 }
@@ -400,34 +401,38 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: Theme.bg,
   },
-  scrollContainer: {
-    padding: 16,
-    paddingTop: Platform.OS === "android" ? StatusBar.currentHeight || 0 : 0,
-  },
-  header: {
-    flexDirection: "row",
+  centerContainer: {
+    flex: 1,
+    justifyContent: "center",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 20,
-    paddingHorizontal: 4,
+    padding: 32,
   },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: "400",
-    letterSpacing: 1,
-    color: "#2C3E50",
-    textTransform: "lowercase",
+  permissionText: {
+    fontSize: 16,
+    color: Theme.textSecondary,
+    textAlign: "center",
+    marginTop: 16,
+    marginBottom: 28,
+    lineHeight: 24,
+  },
+  permissionButton: {
+    backgroundColor: Theme.accent,
+    paddingHorizontal: 28,
+    paddingVertical: 14,
+    borderRadius: 28,
+  },
+  permissionButtonText: {
+    color: Theme.bg,
+    fontSize: 15,
+    fontWeight: "600",
   },
   mapContainer: {
-    height: 300,
-    borderRadius: 12,
-    overflow: "hidden",
-    marginBottom: 20,
+    height: 260,
     position: "relative",
-    borderWidth: 1,
-    borderColor: "#ECF0F1",
+    borderBottomWidth: 1,
+    borderBottomColor: Theme.border,
   },
   map: {
     flex: 1,
@@ -436,199 +441,182 @@ const styles = StyleSheet.create({
     position: "absolute",
     bottom: 12,
     left: 12,
-    backgroundColor: "rgba(255, 255, 255, 0.9)",
+    backgroundColor: "rgba(255,82,82,0.9)",
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 20,
-    flexDirection: "row",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#FADBD8",
+    borderRadius: 16,
   },
   mapErrorText: {
     fontSize: 12,
-    color: "#E74C3C",
-    marginLeft: 4,
+    color: Theme.white,
   },
-  mapStatus: {
+  statusPill: {
     position: "absolute",
     top: 12,
     right: 12,
-    backgroundColor: "rgba(255, 255, 255, 0.9)",
-    paddingHorizontal: 10,
+    backgroundColor: "rgba(22,22,22,0.85)",
+    paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 20,
+    borderRadius: 16,
     flexDirection: "row",
     alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#ECF0F1",
+  },
+  statusPillActive: {
+    backgroundColor: "rgba(0,230,118,0.15)",
   },
   statusDot: {
-    width: 8,
-    height: 8,
+    width: 7,
+    height: 7,
     borderRadius: 4,
+    backgroundColor: Theme.textMuted,
     marginRight: 6,
   },
-  activeDot: {
-    backgroundColor: "#E74C3C",
-  },
-  inactiveDot: {
-    backgroundColor: "#95A5A6",
+  statusDotActive: {
+    backgroundColor: Theme.accent,
   },
   statusText: {
     fontSize: 12,
-    color: "#7F8C8D",
-    textTransform: "lowercase",
-  },
-  statsGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
-    marginBottom: 16,
-  },
-  statCard: {
-    width: (width - 48) / 2,
-    backgroundColor: "#F8F9F9",
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: "#ECF0F1",
-  },
-  statValue: {
-    fontSize: 24,
-    fontWeight: "300",
-    color: "#2C3E50",
-    marginTop: 8,
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: "#95A5A6",
-    textTransform: "lowercase",
+    color: Theme.textSecondary,
+    fontWeight: "500",
     letterSpacing: 0.5,
   },
-  infoRow: {
+  statusTextActive: {
+    color: Theme.accent,
+  },
+  offlinePill: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    backgroundColor: "rgba(22,22,22,0.85)",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 14,
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 24,
-    paddingHorizontal: 4,
+    gap: 4,
   },
-  infoText: {
-    fontSize: 14,
-    color: "#7F8C8D",
-    marginLeft: 8,
+  offlineText: {
+    fontSize: 11,
+    color: Theme.accent,
+    fontWeight: "500",
+  },
+  statsContainer: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: 24,
+  },
+  primaryStat: {
+    alignItems: "center",
+    marginBottom: 24,
+  },
+  primaryValue: {
+    fontSize: 60,
+    fontWeight: "200",
+    color: Theme.text,
+    letterSpacing: 2,
+    fontVariant: ["tabular-nums"],
+  },
+  primaryLabel: {
+    fontSize: 12,
+    color: Theme.textMuted,
+    textTransform: "uppercase",
+    letterSpacing: 2,
+    marginTop: 4,
+  },
+  secondaryStats: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 20,
+  },
+  stat: {
+    flex: 1,
+    alignItems: "center",
+  },
+  statValue: {
+    fontSize: 22,
+    fontWeight: "300",
+    color: Theme.text,
+    fontVariant: ["tabular-nums"],
+  },
+  statLabel: {
+    fontSize: 11,
+    color: Theme.textMuted,
+    textTransform: "uppercase",
+    letterSpacing: 1.5,
+    marginTop: 4,
+  },
+  statDivider: {
+    width: 1,
+    height: 32,
+    backgroundColor: Theme.border,
+  },
+  tertiaryStats: {
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 32,
+  },
+  tertiaryStat: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+  },
+  tertiaryValue: {
+    fontSize: 15,
+    fontWeight: "400",
+    color: Theme.textSecondary,
+    fontVariant: ["tabular-nums"],
+  },
+  tertiaryLabel: {
+    fontSize: 11,
+    color: Theme.textMuted,
   },
   controls: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 20,
-  },
-  button: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
     justifyContent: "center",
-    alignItems: "center",
-  },
-  buttonPlaceholder: {
-    width: 60,
-    height: 60,
+    paddingBottom: 16,
+    paddingHorizontal: 24,
+    gap: 24,
   },
   mainButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    flexDirection: "row",
-    backgroundColor: "#2C3E50",
-  },
-  startButton: {
-    backgroundColor: "#2C3E50",
-  },
-  stopButton: {
-    backgroundColor: "#E74C3C",
-  },
-  resetButton: {
-    backgroundColor: "#F8F9F9",
-    borderWidth: 1,
-    borderColor: "#ECF0F1",
-  },
-  mainButtonText: {
-    color: "#FFFFFF",
-    marginLeft: 4,
-    fontSize: 16,
-    fontWeight: "400",
-    textTransform: "lowercase",
-  },
-  errorContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#FDF1F0",
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: "#FADBD8",
-  },
-  errorText: {
-    color: "#E74C3C",
-    marginLeft: 8,
-    fontSize: 14,
-    flex: 1,
-    flexWrap: "wrap",
-  },
-  debugContainer: {
-    backgroundColor: "#F8F9F9",
-    padding: 16,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#ECF0F1",
-  },
-  debugTitle: {
-    fontSize: 14,
-    fontWeight: "500",
-    color: "#2C3E50",
-    marginBottom: 12,
-    textTransform: "lowercase",
-    letterSpacing: 0.5,
-  },
-  debugRow: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 8,
-  },
-  debugLabel: {
-    fontSize: 13,
-    color: "#7F8C8D",
-  },
-  debugValue: {
-    fontSize: 13,
-    color: "#2C3E50",
-    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
-  },
-  centerContainer: {
-    flex: 1,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     justifyContent: "center",
     alignItems: "center",
-    padding: 20,
   },
-  permissionText: {
-    fontSize: 16,
-    color: "#2C3E50",
-    textAlign: "center",
-    marginTop: 16,
-    marginBottom: 24,
+  startButton: {
+    backgroundColor: Theme.accent,
   },
-  permissionButton: {
-    backgroundColor: "#2C3E50",
-    paddingHorizontal: 24,
-    paddingVertical: 12,
+  stopButton: {
+    backgroundColor: Theme.danger,
+  },
+  secondaryButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: Theme.surface,
+    borderWidth: 1,
+    borderColor: Theme.border,
+  },
+  errorContainer: {
+    marginHorizontal: 24,
+    marginBottom: 12,
+    backgroundColor: "rgba(255,82,82,0.1)",
+    padding: 12,
     borderRadius: 8,
   },
-  permissionButtonText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "500",
+  errorText: {
+    color: Theme.danger,
+    fontSize: 13,
+    textAlign: "center",
+  },
+  offscreen: {
+    position: "absolute",
+    left: -9999,
+    top: -9999,
   },
 });

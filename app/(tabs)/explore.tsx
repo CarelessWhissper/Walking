@@ -1,24 +1,22 @@
-import { Image } from 'expo-image';
 import {
   Platform,
   StyleSheet,
   View,
   Text,
   TouchableOpacity,
-  ScrollView,
-  Dimensions,
   FlatList,
   Alert,
+  StatusBar,
 } from "react-native";
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useCallback } from "react";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "@expo/vector-icons/MaterialCommunityIcons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
-import { StatusBar } from "react-native";
+import { Theme } from "@/constants/theme";
+import { ShareCard, ShareCardData } from "@/components/ShareCard";
+import { useShareRun } from "@/hooks/useShareRun";
 
-
-const { width } = Dimensions.get("window");
 interface SavedRun {
   id: string;
   date: string;
@@ -26,33 +24,34 @@ interface SavedRun {
   duration: number;
   pace: string;
   calories?: number;
+  cadence?: number;
+  stepCount?: number;
   notes?: string;
   locations?: any[];
 }
 
-export default function TabTwoScreen() {
-
-   const [runs, setRuns] = useState<SavedRun[]>([]);
-  const [selectedPeriod, setSelectedPeriod] = useState<'week' | 'month' | 'all'>('week');
+export default function HistoryScreen() {
+  const [runs, setRuns] = useState<SavedRun[]>([]);
+  const [selectedPeriod, setSelectedPeriod] = useState<"week" | "month" | "all">("all");
+  const [shareRunData, setShareRunData] = useState<ShareCardData | null>(null);
+  const { cardRef, share, isSharing } = useShareRun();
   const [stats, setStats] = useState({
     totalDistance: 0,
     totalRuns: 0,
-    avgPace: '0:00',
-    bestPace: '0:00',
-    longestRun: 0,
+    avgPace: "0:00",
+    totalCalories: 0,
   });
 
-  // Load runs from storage
   const loadRuns = async () => {
     try {
-      const savedRuns = await AsyncStorage.getItem('runs');
+      const savedRuns = await AsyncStorage.getItem("runs");
       if (savedRuns) {
         const parsedRuns = JSON.parse(savedRuns);
         setRuns(parsedRuns);
         calculateStats(parsedRuns);
       }
-    } catch (error) {
-      console.error('Error loading runs:', error);
+    } catch (err) {
+      console.error("Error loading runs:", err);
     }
   };
 
@@ -62,40 +61,23 @@ export default function TabTwoScreen() {
     }, [])
   );
 
-  // Calculate statistics
   const calculateStats = (runsData: SavedRun[]) => {
     if (runsData.length === 0) return;
 
     const totalDist = runsData.reduce((sum, run) => sum + run.distance, 0);
     const totalDur = runsData.reduce((sum, run) => sum + run.duration, 0);
-    const avgPace = calculateAvgPace(totalDist, totalDur);
-    
-    // Find best pace
-    const paces = runsData.map(run => {
-      const [mins, secs] = run.pace.split(':').map(Number);
-      return mins * 60 + secs;
-    });
-    const bestPaceSecs = Math.min(...paces);
-    const bestMins = Math.floor(bestPaceSecs / 60);
-    const bestSecs = bestPaceSecs % 60;
-    
-    const longest = Math.max(...runsData.map(run => run.distance));
+    const totalCals = runsData.reduce((sum, run) => sum + (run.calories || 0), 0);
+
+    const avgPaceMinPerKm = totalDist > 0 ? (totalDur / 60) / (totalDist / 1000) : 0;
+    const avgMins = Math.floor(avgPaceMinPerKm);
+    const avgSecs = Math.round((avgPaceMinPerKm - avgMins) * 60);
 
     setStats({
       totalDistance: totalDist,
       totalRuns: runsData.length,
-      avgPace: avgPace,
-      bestPace: `${bestMins}:${bestSecs.toString().padStart(2, '0')}`,
-      longestRun: longest,
+      avgPace: `${avgMins}:${avgSecs.toString().padStart(2, "0")}`,
+      totalCalories: totalCals,
     });
-  };
-
-  const calculateAvgPace = (totalDist: number, totalDur: number): string => {
-    if (totalDist === 0) return '0:00';
-    const avgPaceMinPerKm = (totalDur / 60) / (totalDist / 1000);
-    const mins = Math.floor(avgPaceMinPerKm);
-    const secs = Math.round((avgPaceMinPerKm - mins) * 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   const formatDate = (dateString: string) => {
@@ -104,354 +86,356 @@ export default function TabTwoScreen() {
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
 
-    if (date.toDateString() === today.toDateString()) {
-      return 'Today';
-    } else if (date.toDateString() === yesterday.toDateString()) {
-      return 'Yesterday';
-    } else {
-      return date.toLocaleDateString('en-US', { 
-        month: 'short', 
-        day: 'numeric',
-        year: date.getFullYear() !== today.getFullYear() ? 'numeric' : undefined
-      });
-    }
+    if (date.toDateString() === today.toDateString()) return "Today";
+    if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
+    return date.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: date.getFullYear() !== today.getFullYear() ? "numeric" : undefined,
+    });
   };
 
   const formatTime = (seconds: number) => {
     const hours = Math.floor(seconds / 3600);
     const mins = Math.floor((seconds % 3600) / 60);
     const secs = seconds % 60;
-    
-    if (hours > 0) {
-      return `${hours}h ${mins}m`;
-    } else {
-      return `${mins}:${secs.toString().padStart(2, '0')}`;
-    }
+    if (hours > 0) return `${hours}h ${mins}m`;
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
   const formatDistance = (meters: number) => {
-    if (meters < 1000) {
-      return `${Math.round(meters)}m`;
-    } else {
-      return `${(meters / 1000).toFixed(2)}km`;
-    }
+    if (meters < 1000) return `${Math.round(meters)}m`;
+    return `${(meters / 1000).toFixed(2)} km`;
   };
 
   const deleteRun = (runId: string) => {
-    Alert.alert(
-      "Delete Run",
-      "Are you sure you want to delete this run?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              const updatedRuns = runs.filter(run => run.id !== runId);
-              await AsyncStorage.setItem('runs', JSON.stringify(updatedRuns));
-              setRuns(updatedRuns);
-              calculateStats(updatedRuns);
-            } catch (error) {
-              console.error('Error deleting run:', error);
-            }
-          }
-        }
-      ]
-    );
+    Alert.alert("Delete Run", "Are you sure?", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          const updatedRuns = runs.filter((run) => run.id !== runId);
+          await AsyncStorage.setItem("runs", JSON.stringify(updatedRuns));
+          setRuns(updatedRuns);
+          calculateStats(updatedRuns);
+        },
+      },
+    ]);
   };
 
   const filterRunsByPeriod = (): SavedRun[] => {
-    if (selectedPeriod === 'all') return runs;
-    
-    const now = new Date();
+    if (selectedPeriod === "all") return runs;
     const cutoff = new Date();
-    
-    if (selectedPeriod === 'week') {
-      cutoff.setDate(now.getDate() - 7);
-    } else if (selectedPeriod === 'month') {
-      cutoff.setMonth(now.getMonth() - 1);
-    }
-    
-    return runs.filter(run => new Date(run.date) >= cutoff);
+    if (selectedPeriod === "week") cutoff.setDate(cutoff.getDate() - 7);
+    else cutoff.setMonth(cutoff.getMonth() - 1);
+    return runs.filter((run) => new Date(run.date) >= cutoff);
   };
 
   const filteredRuns = filterRunsByPeriod();
+  const periods: ("week" | "month" | "all")[] = ["week", "month", "all"];
 
-  // Render each run item
+  const handleShareRun = useCallback(async (item: SavedRun) => {
+    const dist = item.distance >= 1000
+      ? (item.distance / 1000).toFixed(2)
+      : `0.${Math.round(item.distance).toString().padStart(3, "0")}`;
+
+    const data: ShareCardData = {
+      distance: dist,
+      duration: formatTime(item.duration),
+      pace: item.pace,
+      date: new Date(item.date).toLocaleDateString("en-US", {
+        weekday: "long",
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      }),
+      calories: item.calories,
+      cadence: item.cadence,
+    };
+
+    setShareRunData(data);
+    // Wait a frame for the card to render, then capture
+    requestAnimationFrame(() => {
+      setTimeout(() => share(), 100);
+    });
+  }, [share]);
+
   const renderRunItem = ({ item }: { item: SavedRun }) => (
-    <TouchableOpacity 
+    <TouchableOpacity
       style={styles.runCard}
       onLongPress={() => deleteRun(item.id)}
       activeOpacity={0.7}
     >
       <View style={styles.runHeader}>
-        <View style={styles.runDateContainer}>
+        <View>
           <Text style={styles.runDate}>{formatDate(item.date)}</Text>
           <Text style={styles.runTime}>
-            {new Date(item.date).toLocaleTimeString('en-US', { 
-              hour: '2-digit', 
-              minute: '2-digit' 
+            {new Date(item.date).toLocaleTimeString("en-US", {
+              hour: "2-digit",
+              minute: "2-digit",
             })}
           </Text>
         </View>
-        <Icon name="dots-vertical" size={20} color="#95A5A6" />
+        <TouchableOpacity
+          onPress={() => handleShareRun(item)}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          disabled={isSharing}
+        >
+          <Icon name="share-variant" size={18} color={Theme.textMuted} />
+        </TouchableOpacity>
       </View>
 
-      <View style={styles.runStats}>
-        <View style={styles.runStat}>
-          <Icon name="map-marker-distance" size={16} color="#7F8C8D" />
-          <Text style={styles.runStatValue}>{formatDistance(item.distance)}</Text>
+      <View style={styles.runMetrics}>
+        <View style={styles.runMetric}>
+          <Text style={styles.runMetricValue}>{formatDistance(item.distance)}</Text>
+          <Text style={styles.runMetricLabel}>dist</Text>
         </View>
-
-        <View style={styles.runStat}>
-          <Icon name="clock-outline" size={16} color="#7F8C8D" />
-          <Text style={styles.runStatValue}>{formatTime(item.duration)}</Text>
+        <View style={styles.runMetric}>
+          <Text style={styles.runMetricValue}>{formatTime(item.duration)}</Text>
+          <Text style={styles.runMetricLabel}>time</Text>
         </View>
-
-        <View style={styles.runStat}>
-          <Icon name="speedometer" size={16} color="#7F8C8D" />
-          <Text style={styles.runStatValue}>{item.pace}/km</Text>
+        <View style={styles.runMetric}>
+          <Text style={styles.runMetricValue}>{item.pace}</Text>
+          <Text style={styles.runMetricLabel}>pace</Text>
         </View>
       </View>
 
-      {item.notes && (
-        <Text style={styles.runNotes}>{item.notes}</Text>
+      {/* Extra metrics row for calories, cadence, steps */}
+      {(item.calories || item.cadence || item.stepCount) && (
+        <View style={styles.runExtras}>
+          {item.calories != null && item.calories > 0 && (
+            <View style={styles.runExtra}>
+              <Icon name="fire" size={12} color={Theme.textMuted} />
+              <Text style={styles.runExtraValue}>{item.calories} kcal</Text>
+            </View>
+          )}
+          {item.cadence != null && item.cadence > 0 && (
+            <View style={styles.runExtra}>
+              <Icon name="shoe-print" size={12} color={Theme.textMuted} />
+              <Text style={styles.runExtraValue}>{item.cadence} spm</Text>
+            </View>
+          )}
+          {item.stepCount != null && item.stepCount > 0 && (
+            <View style={styles.runExtra}>
+              <Icon name="walk" size={12} color={Theme.textMuted} />
+              <Text style={styles.runExtraValue}>{item.stepCount.toLocaleString()}</Text>
+            </View>
+          )}
+        </View>
       )}
     </TouchableOpacity>
   );
-   return (
+
+  return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
+      <StatusBar barStyle="light-content" backgroundColor={Theme.bg} />
 
       {/* Header */}
       <View style={styles.header}>
-        <Icon name="history" size={32} color="#2C3E50" />
-        <Text style={styles.headerTitle}>history</Text>
-        <TouchableOpacity
-          onPress={loadRuns}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <Icon name="refresh" size={24} color="#95A5A6" />
-        </TouchableOpacity>
+        <Text style={styles.headerTitle}>History</Text>
       </View>
 
-      {/* Stats Cards */}
-      <View style={styles.statsGrid}>
-        <View style={styles.statCard}>
-          <Icon name="counter" size={20} color="#7F8C8D" />
-          <Text style={styles.statValue}>{stats.totalRuns}</Text>
-          <Text style={styles.statLabel}>total runs</Text>
+      {/* Summary stats */}
+      <View style={styles.summaryRow}>
+        <View style={styles.summaryItem}>
+          <Text style={styles.summaryValue}>{stats.totalRuns}</Text>
+          <Text style={styles.summaryLabel}>runs</Text>
         </View>
-
-        <View style={styles.statCard}>
-          <Icon name="map-marker-distance" size={20} color="#7F8C8D" />
-          <Text style={styles.statValue}>{formatDistance(stats.totalDistance)}</Text>
-          <Text style={styles.statLabel}>total dist</Text>
+        <View style={styles.summaryDivider} />
+        <View style={styles.summaryItem}>
+          <Text style={styles.summaryValue}>{formatDistance(stats.totalDistance)}</Text>
+          <Text style={styles.summaryLabel}>total</Text>
         </View>
-
-        <View style={styles.statCard}>
-          <Icon name="speedometer" size={20} color="#7F8C8D" />
-          <Text style={styles.statValue}>{stats.avgPace}</Text>
-          <Text style={styles.statLabel}>avg pace</Text>
+        <View style={styles.summaryDivider} />
+        <View style={styles.summaryItem}>
+          <Text style={styles.summaryValue}>{stats.avgPace}</Text>
+          <Text style={styles.summaryLabel}>avg pace</Text>
         </View>
-
-        <View style={styles.statCard}>
-          <Icon name="trophy" size={20} color="#7F8C8D" />
-          <Text style={styles.statValue}>{stats.bestPace}</Text>
-          <Text style={styles.statLabel}>best pace</Text>
+        <View style={styles.summaryDivider} />
+        <View style={styles.summaryItem}>
+          <Text style={styles.summaryValue}>
+            {stats.totalCalories > 0 ? stats.totalCalories.toLocaleString() : "—"}
+          </Text>
+          <Text style={styles.summaryLabel}>kcal</Text>
         </View>
       </View>
 
-      {/* Filter Tabs */}
-      <View style={styles.filterContainer}>
-        <TouchableOpacity
-          style={[styles.filterTab, selectedPeriod === 'week' && styles.filterTabActive]}
-          onPress={() => setSelectedPeriod('week')}
-        >
-          <Text style={[styles.filterText, selectedPeriod === 'week' && styles.filterTextActive]}>
-            Week
-          </Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={[styles.filterTab, selectedPeriod === 'month' && styles.filterTabActive]}
-          onPress={() => setSelectedPeriod('month')}
-        >
-          <Text style={[styles.filterText, selectedPeriod === 'month' && styles.filterTextActive]}>
-            Month
-          </Text>
-        </TouchableOpacity>
-        
-        <TouchableOpacity
-          style={[styles.filterTab, selectedPeriod === 'all' && styles.filterTabActive]}
-          onPress={() => setSelectedPeriod('all')}
-        >
-          <Text style={[styles.filterText, selectedPeriod === 'all' && styles.filterTextActive]}>
-            All
-          </Text>
-        </TouchableOpacity>
+      {/* Period filter pills */}
+      <View style={styles.filterRow}>
+        {periods.map((period) => (
+          <TouchableOpacity
+            key={period}
+            style={[styles.filterPill, selectedPeriod === period && styles.filterPillActive]}
+            onPress={() => setSelectedPeriod(period)}
+          >
+            <Text
+              style={[styles.filterText, selectedPeriod === period && styles.filterTextActive]}
+            >
+              {period}
+            </Text>
+          </TouchableOpacity>
+        ))}
       </View>
 
-      {/* Runs List */}
+      {/* Runs */}
       {filteredRuns.length > 0 ? (
         <FlatList
           data={filteredRuns}
           renderItem={renderRunItem}
           keyExtractor={(item) => item.id}
           showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.listContainer}
-          ListHeaderComponent={
-            <Text style={styles.sectionTitle}>
-              {filteredRuns.length} {filteredRuns.length === 1 ? 'run' : 'runs'} found
-            </Text>
-          }
+          contentContainerStyle={styles.listContent}
         />
       ) : (
         <View style={styles.emptyContainer}>
-          <Icon name="run-fast" size={64} color="#ECF0F1" />
+          <Icon name="run-fast" size={48} color={Theme.textMuted} />
           <Text style={styles.emptyText}>No runs yet</Text>
-          <Text style={styles.emptySubtext}>
-            Complete your first run to see it here
-          </Text>
+          <Text style={styles.emptySubtext}>Your runs will appear here</Text>
+        </View>
+      )}
+
+      {/* Offscreen share card for capture */}
+      {shareRunData && (
+        <View style={styles.offscreen} pointerEvents="none">
+          <ShareCard ref={cardRef} data={shareRunData} />
         </View>
       )}
     </SafeAreaView>
   );
 }
 
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
+    backgroundColor: Theme.bg,
   },
   header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: 16,
-    paddingTop: Platform.OS === "android" ? StatusBar.currentHeight || 16 : 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "#ECF0F1",
+    paddingHorizontal: 24,
+    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 16) + 8 : 16,
+    paddingBottom: 16,
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: "400",
-    letterSpacing: 1,
-    color: "#2C3E50",
-    textTransform: "lowercase",
+    fontSize: 28,
+    fontWeight: "700",
+    color: Theme.text,
   },
-  statsGrid: {
+  summaryRow: {
     flexDirection: "row",
-    flexWrap: "wrap",
-    justifyContent: "space-between",
-    padding: 16,
-  },
-  statCard: {
-    width: (width - 48) / 2,
-    backgroundColor: "#F8F9F9",
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: "#ECF0F1",
-  },
-  statValue: {
-    fontSize: 24,
-    fontWeight: "300",
-    color: "#2C3E50",
-    marginTop: 8,
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: "#95A5A6",
-    textTransform: "lowercase",
-    letterSpacing: 0.5,
-  },
-  filterContainer: {
-    flexDirection: "row",
-    paddingHorizontal: 16,
-    marginBottom: 16,
-  },
-  filterTab: {
-    flex: 1,
-    paddingVertical: 8,
     alignItems: "center",
-    borderBottomWidth: 2,
-    borderBottomColor: "transparent",
+    marginHorizontal: 24,
+    paddingVertical: 20,
+    backgroundColor: Theme.surface,
+    borderRadius: 16,
+    marginBottom: 20,
   },
-  filterTabActive: {
-    borderBottomColor: "#E74C3C",
+  summaryItem: {
+    flex: 1,
+    alignItems: "center",
+  },
+  summaryValue: {
+    fontSize: 18,
+    fontWeight: "600",
+    color: Theme.text,
+    fontVariant: ["tabular-nums"],
+  },
+  summaryLabel: {
+    fontSize: 11,
+    color: Theme.textMuted,
+    textTransform: "uppercase",
+    letterSpacing: 1,
+    marginTop: 4,
+  },
+  summaryDivider: {
+    width: 1,
+    height: 28,
+    backgroundColor: Theme.border,
+  },
+  filterRow: {
+    flexDirection: "row",
+    paddingHorizontal: 24,
+    marginBottom: 16,
+    gap: 8,
+  },
+  filterPill: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: Theme.surface,
+  },
+  filterPillActive: {
+    backgroundColor: Theme.accent,
   },
   filterText: {
-    fontSize: 14,
-    color: "#95A5A6",
-    textTransform: "lowercase",
+    fontSize: 13,
+    fontWeight: "500",
+    color: Theme.textSecondary,
+    textTransform: "capitalize",
   },
   filterTextActive: {
-    color: "#E74C3C",
-    fontWeight: "500",
+    color: Theme.bg,
   },
-  listContainer: {
-    padding: 16,
-    paddingTop: 0,
-  },
-  sectionTitle: {
-    fontSize: 14,
-    color: "#7F8C8D",
-    marginBottom: 12,
-    textTransform: "lowercase",
+  listContent: {
+    paddingHorizontal: 24,
+    paddingBottom: 24,
   },
   runCard: {
-    backgroundColor: "#F8F9F9",
-    borderRadius: 12,
+    backgroundColor: Theme.surface,
+    borderRadius: 14,
     padding: 16,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: "#ECF0F1",
+    marginBottom: 10,
   },
   runHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 12,
-  },
-  runDateContainer: {
-    flexDirection: "row",
-    alignItems: "center",
+    marginBottom: 14,
   },
   runDate: {
-    fontSize: 16,
-    fontWeight: "500",
-    color: "#2C3E50",
-    marginRight: 8,
+    fontSize: 15,
+    fontWeight: "600",
+    color: Theme.text,
   },
   runTime: {
-    fontSize: 14,
-    color: "#95A5A6",
+    fontSize: 13,
+    color: Theme.textMuted,
   },
-  runStats: {
+  runMetrics: {
     flexDirection: "row",
     justifyContent: "space-between",
   },
-  runStat: {
+  runMetric: {
+    flex: 1,
+  },
+  runMetricValue: {
+    fontSize: 16,
+    fontWeight: "500",
+    color: Theme.text,
+    fontVariant: ["tabular-nums"],
+  },
+  runMetricLabel: {
+    fontSize: 11,
+    color: Theme.textMuted,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginTop: 2,
+  },
+  runExtras: {
     flexDirection: "row",
-    alignItems: "center",
-  },
-  runStatValue: {
-    fontSize: 14,
-    color: "#2C3E50",
-    marginLeft: 4,
-  },
-  runNotes: {
-    fontSize: 13,
-    color: "#7F8C8D",
     marginTop: 12,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: "#ECF0F1",
+    borderTopColor: Theme.border,
+    gap: 16,
+  },
+  runExtra: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  runExtraValue: {
+    fontSize: 12,
+    color: Theme.textSecondary,
   },
   emptyContainer: {
     flex: 1,
@@ -461,16 +445,18 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 18,
-    fontWeight: "500",
-    color: "#2C3E50",
+    fontWeight: "600",
+    color: Theme.textSecondary,
     marginTop: 16,
-    marginBottom: 8,
-    textTransform: "lowercase",
   },
   emptySubtext: {
     fontSize: 14,
-    color: "#95A5A6",
-    textAlign: "center",
-    textTransform: "lowercase",
+    color: Theme.textMuted,
+    marginTop: 4,
+  },
+  offscreen: {
+    position: "absolute",
+    left: -9999,
+    top: -9999,
   },
 });

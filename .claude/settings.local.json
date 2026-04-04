@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /f/workout/track log --oneline)",
+      "Bash(npx tsc:*)",
+      "Bash(npx expo:*)",
+      "Bash(node:*)",
+      "Bash(npm install:*)",
+      "Bash(adb devices:*)",
+      "Bash(./gradlew assembleDebug)",
+      "Bash(adb:*)",
+      "Bash(./gradlew assembleRelease)"
+    ]
+  }
+}
