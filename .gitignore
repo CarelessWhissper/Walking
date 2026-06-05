@@ -49,3 +49,5 @@ expo-env.d.ts
 
 # claude
 .claude/
+
+/screenshots

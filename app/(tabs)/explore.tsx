@@ -1,21 +1,23 @@
-import {
-  Platform,
-  StyleSheet,
-  View,
-  Text,
-  TouchableOpacity,
-  FlatList,
-  Alert,
-  StatusBar,
-} from "react-native";
-import React, { useState, useCallback } from "react";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { confirm } from "@/components/ConfirmSheet";
+import { ShareCardData } from "@/components/ShareCard";
+import { setPendingShare } from "@/components/shareState";
+import { toast } from "@/components/Toast";
+import { Theme } from "@/constants/theme";
 import Icon from "@expo/vector-icons/MaterialCommunityIcons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
-import { Theme } from "@/constants/theme";
-import { ShareCard, ShareCardData } from "@/components/ShareCard";
-import { useShareRun } from "@/hooks/useShareRun";
+import { useRouter } from "expo-router";
+import React, { useCallback, useState } from "react";
+import {
+  FlatList,
+  Platform,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 interface SavedRun {
   id: string;
@@ -32,9 +34,10 @@ interface SavedRun {
 
 export default function HistoryScreen() {
   const [runs, setRuns] = useState<SavedRun[]>([]);
-  const [selectedPeriod, setSelectedPeriod] = useState<"week" | "month" | "all">("all");
-  const [shareRunData, setShareRunData] = useState<ShareCardData | null>(null);
-  const { cardRef, share, isSharing } = useShareRun();
+  const [selectedPeriod, setSelectedPeriod] = useState<
+    "week" | "month" | "all"
+  >("all");
+  const router = useRouter();
   const [stats, setStats] = useState({
     totalDistance: 0,
     totalRuns: 0,
@@ -58,7 +61,7 @@ export default function HistoryScreen() {
   useFocusEffect(
     useCallback(() => {
       loadRuns();
-    }, [])
+    }, []),
   );
 
   const calculateStats = (runsData: SavedRun[]) => {
@@ -66,9 +69,13 @@ export default function HistoryScreen() {
 
     const totalDist = runsData.reduce((sum, run) => sum + run.distance, 0);
     const totalDur = runsData.reduce((sum, run) => sum + run.duration, 0);
-    const totalCals = runsData.reduce((sum, run) => sum + (run.calories || 0), 0);
+    const totalCals = runsData.reduce(
+      (sum, run) => sum + (run.calories || 0),
+      0,
+    );
 
-    const avgPaceMinPerKm = totalDist > 0 ? (totalDur / 60) / (totalDist / 1000) : 0;
+    const avgPaceMinPerKm =
+      totalDist > 0 ? totalDur / 60 / (totalDist / 1000) : 0;
     const avgMins = Math.floor(avgPaceMinPerKm);
     const avgSecs = Math.round((avgPaceMinPerKm - avgMins) * 60);
 
@@ -108,20 +115,19 @@ export default function HistoryScreen() {
     return `${(meters / 1000).toFixed(2)} km`;
   };
 
-  const deleteRun = (runId: string) => {
-    Alert.alert("Delete Run", "Are you sure?", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          const updatedRuns = runs.filter((run) => run.id !== runId);
-          await AsyncStorage.setItem("runs", JSON.stringify(updatedRuns));
-          setRuns(updatedRuns);
-          calculateStats(updatedRuns);
-        },
-      },
-    ]);
+  const deleteRun = async (runId: string) => {
+    const ok = await confirm({
+      title: "Delete this run?",
+      message: "This permanently removes the run from your history.",
+      confirmText: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
+    const updatedRuns = runs.filter((run) => run.id !== runId);
+    await AsyncStorage.setItem("runs", JSON.stringify(updatedRuns));
+    setRuns(updatedRuns);
+    calculateStats(updatedRuns);
+    toast.info("Run deleted");
   };
 
   const filterRunsByPeriod = (): SavedRun[] => {
@@ -135,31 +141,46 @@ export default function HistoryScreen() {
   const filteredRuns = filterRunsByPeriod();
   const periods: ("week" | "month" | "all")[] = ["week", "month", "all"];
 
-  const handleShareRun = useCallback(async (item: SavedRun) => {
-    const dist = item.distance >= 1000
-      ? (item.distance / 1000).toFixed(2)
-      : `0.${Math.round(item.distance).toString().padStart(3, "0")}`;
+  const handleShareRun = useCallback(
+    (item: SavedRun) => {
+      const dist =
+        item.distance >= 1000
+          ? (item.distance / 1000).toFixed(2)
+          : `0.${Math.round(item.distance).toString().padStart(3, "0")}`;
 
-    const data: ShareCardData = {
-      distance: dist,
-      duration: formatTime(item.duration),
-      pace: item.pace,
-      date: new Date(item.date).toLocaleDateString("en-US", {
-        weekday: "long",
-        month: "short",
-        day: "numeric",
-        year: "numeric",
-      }),
-      calories: item.calories,
-      cadence: item.cadence,
-    };
+      const normalizedLocations = Array.isArray(item.locations)
+        ? item.locations
+            .map((l: any) => ({
+              latitude: l?.latitude ?? l?.lat,
+              longitude: l?.longitude ?? l?.lng ?? l?.lon,
+            }))
+            .filter(
+              (l) =>
+                typeof l.latitude === "number" &&
+                typeof l.longitude === "number",
+            )
+        : undefined;
 
-    setShareRunData(data);
-    // Wait a frame for the card to render, then capture
-    requestAnimationFrame(() => {
-      setTimeout(() => share(), 100);
-    });
-  }, [share]);
+      const data: ShareCardData = {
+        distance: dist,
+        duration: formatTime(item.duration),
+        pace: item.pace,
+        date: new Date(item.date).toLocaleDateString("en-US", {
+          weekday: "long",
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        }),
+        calories: item.calories,
+        cadence: item.cadence,
+        locations: normalizedLocations,
+      };
+
+      setPendingShare(data);
+      router.push("/share");
+    },
+    [router],
+  );
 
   const renderRunItem = ({ item }: { item: SavedRun }) => (
     <TouchableOpacity
@@ -180,7 +201,6 @@ export default function HistoryScreen() {
         <TouchableOpacity
           onPress={() => handleShareRun(item)}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          disabled={isSharing}
         >
           <Icon name="share-variant" size={18} color={Theme.textMuted} />
         </TouchableOpacity>
@@ -188,7 +208,9 @@ export default function HistoryScreen() {
 
       <View style={styles.runMetrics}>
         <View style={styles.runMetric}>
-          <Text style={styles.runMetricValue}>{formatDistance(item.distance)}</Text>
+          <Text style={styles.runMetricValue}>
+            {formatDistance(item.distance)}
+          </Text>
           <Text style={styles.runMetricLabel}>dist</Text>
         </View>
         <View style={styles.runMetric}>
@@ -219,7 +241,9 @@ export default function HistoryScreen() {
           {item.stepCount != null && item.stepCount > 0 && (
             <View style={styles.runExtra}>
               <Icon name="walk" size={12} color={Theme.textMuted} />
-              <Text style={styles.runExtraValue}>{item.stepCount.toLocaleString()}</Text>
+              <Text style={styles.runExtraValue}>
+                {item.stepCount.toLocaleString()}
+              </Text>
             </View>
           )}
         </View>
@@ -244,7 +268,9 @@ export default function HistoryScreen() {
         </View>
         <View style={styles.summaryDivider} />
         <View style={styles.summaryItem}>
-          <Text style={styles.summaryValue}>{formatDistance(stats.totalDistance)}</Text>
+          <Text style={styles.summaryValue}>
+            {formatDistance(stats.totalDistance)}
+          </Text>
           <Text style={styles.summaryLabel}>total</Text>
         </View>
         <View style={styles.summaryDivider} />
@@ -255,7 +281,9 @@ export default function HistoryScreen() {
         <View style={styles.summaryDivider} />
         <View style={styles.summaryItem}>
           <Text style={styles.summaryValue}>
-            {stats.totalCalories > 0 ? stats.totalCalories.toLocaleString() : "—"}
+            {stats.totalCalories > 0
+              ? stats.totalCalories.toLocaleString()
+              : "—"}
           </Text>
           <Text style={styles.summaryLabel}>kcal</Text>
         </View>
@@ -266,11 +294,17 @@ export default function HistoryScreen() {
         {periods.map((period) => (
           <TouchableOpacity
             key={period}
-            style={[styles.filterPill, selectedPeriod === period && styles.filterPillActive]}
+            style={[
+              styles.filterPill,
+              selectedPeriod === period && styles.filterPillActive,
+            ]}
             onPress={() => setSelectedPeriod(period)}
           >
             <Text
-              style={[styles.filterText, selectedPeriod === period && styles.filterTextActive]}
+              style={[
+                styles.filterText,
+                selectedPeriod === period && styles.filterTextActive,
+              ]}
             >
               {period}
             </Text>
@@ -295,12 +329,6 @@ export default function HistoryScreen() {
         </View>
       )}
 
-      {/* Offscreen share card for capture */}
-      {shareRunData && (
-        <View style={styles.offscreen} pointerEvents="none">
-          <ShareCard ref={cardRef} data={shareRunData} />
-        </View>
-      )}
     </SafeAreaView>
   );
 }
@@ -312,7 +340,8 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 24,
-    paddingTop: Platform.OS === "android" ? (StatusBar.currentHeight || 16) + 8 : 16,
+    paddingTop:
+      Platform.OS === "android" ? (StatusBar.currentHeight || 16) + 8 : 16,
     paddingBottom: 16,
   },
   headerTitle: {
@@ -453,10 +482,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Theme.textMuted,
     marginTop: 4,
-  },
-  offscreen: {
-    position: "absolute",
-    left: -9999,
-    top: -9999,
   },
 });

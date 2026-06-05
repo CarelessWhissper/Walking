@@ -1,12 +1,14 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   StyleSheet,
   View,
   Text,
+  TextInput,
   TouchableOpacity,
-  Alert,
+  Pressable,
   StatusBar,
   LogBox,
+  Keyboard,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "@expo/vector-icons/MaterialCommunityIcons";
@@ -27,8 +29,10 @@ import { DARK_MAP_STYLE, DARK_MAP_STYLE_RASTER } from "@/config/mapStyle";
 import { useCadenceTracker } from "@/hooks/useCadenceTracker";
 import { estimateCalories, DEFAULT_WEIGHT_KG } from "@/config/calories";
 import { useOfflineMap } from "@/hooks/useOfflineMap";
-import { ShareCard, ShareCardData } from "@/components/ShareCard";
-import { useShareRun } from "@/hooks/useShareRun";
+import { ShareCardData } from "@/components/ShareCard";
+import { setPendingShare } from "@/components/shareState";
+import { toast } from "@/components/Toast";
+import { useRouter } from "expo-router";
 
 LogBox.ignoreLogs([
   "Request failed due to a permanent error: Canceled",
@@ -44,11 +48,25 @@ interface RouteGeoJSON {
   };
 }
 
+const METERS_PER_MILE = 1609.344;
+
+type DistanceUnit = "km" | "mi";
+
+type GoalType = "distance" | "steps";
+
 export default function HomeScreen() {
   const [permissionGranted, setPermissionGranted] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [useRasterFallback, setUseRasterFallback] = useState(false);
   const [userWeight, setUserWeight] = useState(DEFAULT_WEIGHT_KG);
+  const [targetMeters, setTargetMeters] = useState<number | null>(null);
+  const [targetSteps, setTargetSteps] = useState<number | null>(null);
+  const [goalType, setGoalType] = useState<GoalType>("distance");
+  const [unit, setUnit] = useState<DistanceUnit>("km");
+  const [isEditingGoal, setIsEditingGoal] = useState(false);
+  const [goalInput, setGoalInput] = useState("");
+  const [goalError, setGoalError] = useState<string | null>(null);
+  const goalReachedRef = useRef(false);
   const cameraRef = useRef<CameraRef>(null);
 
   const {
@@ -71,10 +89,9 @@ export default function HomeScreen() {
   const { cadence, stepCount } = useCadenceTracker(isTracking);
   const { isDownloading, progress, hasOfflinePack, downloadArea } = useOfflineMap();
   const calories = estimateCalories(distance, elapsedTime, userWeight);
-  const { cardRef, share, isSharing } = useShareRun();
+  const router = useRouter();
 
-  // Build share card data from current run state
-  const shareData: ShareCardData = useMemo(() => ({
+  const buildShareData = useCallback((): ShareCardData => ({
     distance: distance >= 1000
       ? (distance / 1000).toFixed(2)
       : `0.${Math.round(distance).toString().padStart(3, "0")}`,
@@ -94,7 +111,16 @@ export default function HomeScreen() {
     }),
     calories,
     cadence,
-  }), [distance, elapsedTime, pace, calories, cadence]);
+    locations: locations.map((l) => ({
+      latitude: l.latitude,
+      longitude: l.longitude,
+    })),
+  }), [distance, elapsedTime, pace, calories, cadence, locations]);
+
+  const openShare = useCallback(() => {
+    setPendingShare(buildShareData());
+    router.push("/share");
+  }, [buildShareData, router]);
 
   // Load user weight preference
   useEffect(() => {
@@ -103,6 +129,177 @@ export default function HomeScreen() {
       if (saved) setUserWeight(parseFloat(saved));
     })();
   }, []);
+
+  // Load saved goal & unit
+  useEffect(() => {
+    (async () => {
+      const [savedTarget, savedSteps, savedType, savedUnit] = await Promise.all([
+        AsyncStorage.getItem("targetMeters"),
+        AsyncStorage.getItem("targetSteps"),
+        AsyncStorage.getItem("goalType"),
+        AsyncStorage.getItem("distanceUnit"),
+      ]);
+      if (savedTarget) {
+        const parsed = parseFloat(savedTarget);
+        if (!isNaN(parsed) && parsed > 0) setTargetMeters(parsed);
+      }
+      if (savedSteps) {
+        const parsed = parseInt(savedSteps, 10);
+        if (!isNaN(parsed) && parsed > 0) setTargetSteps(parsed);
+      }
+      if (savedType === "distance" || savedType === "steps") setGoalType(savedType);
+      if (savedUnit === "km" || savedUnit === "mi") setUnit(savedUnit);
+    })();
+  }, []);
+
+  // Active goal based on selected type
+  const activeTarget = goalType === "steps" ? targetSteps : targetMeters;
+  const activeCurrent = goalType === "steps" ? stepCount : distance;
+
+  // Notify once when goal is reached
+  useEffect(() => {
+    if (!isTracking) {
+      goalReachedRef.current = false;
+      return;
+    }
+    if (activeTarget && activeCurrent >= activeTarget && !goalReachedRef.current) {
+      goalReachedRef.current = true;
+      const label = goalType === "steps"
+        ? `${activeTarget.toLocaleString()} step`
+        : unit === "km"
+          ? `${(activeTarget / 1000).toFixed(2)} km`
+          : `${(activeTarget / METERS_PER_MILE).toFixed(2)} mi`;
+      toast.success("Goal reached!", `You hit your ${label} target.`);
+    }
+  }, [isTracking, activeCurrent, activeTarget, goalType, unit]);
+
+  const goalProgress = activeTarget && activeTarget > 0
+    ? Math.min(activeCurrent / activeTarget, 1)
+    : 0;
+
+  const formatGoal = (meters: number, u: DistanceUnit): string => {
+    const value = u === "km" ? meters / 1000 : meters / METERS_PER_MILE;
+    return `${value.toFixed(2)} ${u}`;
+  };
+
+  const formatTarget = (): string => {
+    if (!activeTarget) return "";
+    return goalType === "steps"
+      ? `${activeTarget.toLocaleString()} steps`
+      : formatGoal(activeTarget, unit);
+  };
+
+  const remainingLabel = (): string => {
+    if (!activeTarget) return "";
+    const remaining = Math.max(activeTarget - activeCurrent, 0);
+    return goalType === "steps"
+      ? `${Math.ceil(remaining).toLocaleString()} steps`
+      : formatGoal(remaining, unit);
+  };
+
+  const prefillGoalInput = useCallback((type: GoalType) => {
+    if (type === "steps") {
+      setGoalInput(targetSteps ? targetSteps.toString() : "");
+    } else if (targetMeters) {
+      const value = unit === "km"
+        ? (targetMeters / 1000).toFixed(2)
+        : (targetMeters / METERS_PER_MILE).toFixed(2);
+      setGoalInput(value);
+    } else {
+      setGoalInput("");
+    }
+  }, [targetMeters, targetSteps, unit]);
+
+  const openGoalEditor = useCallback(() => {
+    prefillGoalInput(goalType);
+    setGoalError(null);
+    setIsEditingGoal(true);
+  }, [prefillGoalInput, goalType]);
+
+  const switchGoalType = useCallback(async (next: GoalType) => {
+    if (next === goalType) return;
+    setGoalType(next);
+    setGoalError(null);
+    prefillGoalInput(next);
+    await AsyncStorage.setItem("goalType", next);
+  }, [goalType, prefillGoalInput]);
+
+  const saveGoal = useCallback(async () => {
+    const trimmed = goalInput.trim();
+    if (!trimmed) {
+      if (goalType === "steps") {
+        await AsyncStorage.removeItem("targetSteps");
+        setTargetSteps(null);
+      } else {
+        await AsyncStorage.removeItem("targetMeters");
+        setTargetMeters(null);
+      }
+      setGoalError(null);
+      setIsEditingGoal(false);
+      Keyboard.dismiss();
+      return;
+    }
+    if (goalType === "steps") {
+      const parsed = parseInt(trimmed.replace(/[^0-9]/g, ""), 10);
+      if (isNaN(parsed) || parsed <= 0) {
+        setGoalError("Enter a positive whole number");
+        return;
+      }
+      setTargetSteps(parsed);
+      setGoalError(null);
+      await AsyncStorage.setItem("targetSteps", parsed.toString());
+      await AsyncStorage.setItem("goalType", "steps");
+    } else {
+      const parsed = parseFloat(trimmed.replace(",", "."));
+      if (isNaN(parsed) || parsed <= 0) {
+        setGoalError("Enter a positive number");
+        return;
+      }
+      const meters = unit === "km" ? parsed * 1000 : parsed * METERS_PER_MILE;
+      setTargetMeters(meters);
+      setGoalError(null);
+      await AsyncStorage.setItem("targetMeters", meters.toString());
+      await AsyncStorage.setItem("distanceUnit", unit);
+      await AsyncStorage.setItem("goalType", "distance");
+    }
+    setIsEditingGoal(false);
+    Keyboard.dismiss();
+  }, [goalInput, unit, goalType]);
+
+  const cancelGoalEdit = useCallback(() => {
+    setIsEditingGoal(false);
+    setGoalError(null);
+    Keyboard.dismiss();
+  }, []);
+
+  const clearGoal = useCallback(async () => {
+    if (goalType === "steps") {
+      setTargetSteps(null);
+      await AsyncStorage.removeItem("targetSteps");
+    } else {
+      setTargetMeters(null);
+      await AsyncStorage.removeItem("targetMeters");
+    }
+    setGoalError(null);
+    setIsEditingGoal(false);
+    Keyboard.dismiss();
+  }, [goalType]);
+
+  const toggleUnit = useCallback(async () => {
+    const next: DistanceUnit = unit === "km" ? "mi" : "km";
+    setUnit(next);
+    await AsyncStorage.setItem("distanceUnit", next);
+    // Convert any in-progress input value to match the new unit so user intent is preserved
+    if (isEditingGoal && goalInput) {
+      const parsed = parseFloat(goalInput.replace(",", "."));
+      if (!isNaN(parsed) && parsed > 0) {
+        const converted = next === "mi"
+          ? parsed / 1.609344
+          : parsed * 1.609344;
+        setGoalInput(converted.toFixed(2));
+      }
+    }
+  }, [unit, isEditingGoal, goalInput]);
 
   useEffect(() => {
     (async () => {
@@ -141,9 +338,10 @@ export default function HomeScreen() {
 
       runs.push(newRun);
       await AsyncStorage.setItem("runs", JSON.stringify(runs));
-      Alert.alert("Run Saved", "Your run has been saved to history.");
+      toast.success("Run saved", "View it in your history.");
     } catch (err) {
       console.error("Error saving run:", err);
+      toast.error("Couldn't save run", "Try again in a moment.");
     }
   }, [distance, elapsedTime, pace, calories, cadence, stepCount, locations]);
 
@@ -340,6 +538,57 @@ export default function HomeScreen() {
         </View>
       </View>
 
+      {/* Goal */}
+      <View style={styles.goalContainer}>
+        {isEditingGoal ? null : activeTarget ? (
+          isTracking ? (
+            <View style={styles.goalProgressWrap}>
+              <View style={styles.goalProgressLabels}>
+                <Text style={styles.goalProgressText}>
+                  {goalType === "steps"
+                    ? `${Math.min(stepCount, activeTarget).toLocaleString()} / ${activeTarget.toLocaleString()} steps`
+                    : `${formatGoal(Math.min(distance, activeTarget), unit)} / ${formatGoal(activeTarget, unit)}`}
+                </Text>
+                <Text style={styles.goalProgressRemaining}>
+                  {goalProgress >= 1 ? "goal reached" : `${remainingLabel()} left`}
+                </Text>
+              </View>
+              <View style={styles.progressTrack}>
+                <View
+                  style={[
+                    styles.progressFill,
+                    { width: `${goalProgress * 100}%` },
+                  ]}
+                />
+              </View>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={styles.goalChip}
+              onPress={openGoalEditor}
+              activeOpacity={0.7}
+            >
+              <Icon
+                name={goalType === "steps" ? "walk" : "flag-outline"}
+                size={14}
+                color={Theme.accent}
+              />
+              <Text style={styles.goalChipText}>Goal: {formatTarget()}</Text>
+              <Icon name="pencil" size={12} color={Theme.textMuted} />
+            </TouchableOpacity>
+          )
+        ) : !isTracking ? (
+          <TouchableOpacity
+            style={styles.setGoalButton}
+            onPress={openGoalEditor}
+            activeOpacity={0.7}
+          >
+            <Icon name="flag-outline" size={14} color={Theme.textSecondary} />
+            <Text style={styles.setGoalText}>Set goal</Text>
+          </TouchableOpacity>
+        ) : null}
+      </View>
+
       {/* Controls */}
       <View style={styles.controls}>
         {!isTracking && locations.length > 0 && (
@@ -370,22 +619,16 @@ export default function HomeScreen() {
         {!isTracking && locations.length > 0 && (
           <TouchableOpacity
             style={styles.secondaryButton}
-            onPress={share}
-            disabled={isSharing}
+            onPress={openShare}
             activeOpacity={0.7}
           >
             <Icon
               name="share-variant"
               size={22}
-              color={isSharing ? Theme.textMuted : Theme.accent}
+              color={Theme.accent}
             />
           </TouchableOpacity>
         )}
-      </View>
-
-      {/* Offscreen share card for capture */}
-      <View style={styles.offscreen} pointerEvents="none">
-        <ShareCard ref={cardRef} data={shareData} />
       </View>
 
       {/* Error */}
@@ -393,6 +636,85 @@ export default function HomeScreen() {
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>{error}</Text>
         </View>
+      )}
+
+      {/* Goal editor — floats at the top so the keyboard never covers it */}
+      {isEditingGoal && (
+        <>
+          <Pressable style={styles.goalEditorBackdrop} onPress={cancelGoalEdit} />
+          <View style={styles.goalEditorOverlay} pointerEvents="box-none">
+            <View style={styles.goalEditorWrap}>
+              <View style={styles.goalTypeRow}>
+                {(["distance", "steps"] as GoalType[]).map((type) => (
+                  <TouchableOpacity
+                    key={type}
+                    style={[styles.goalTypeChip, goalType === type && styles.goalTypeChipActive]}
+                    onPress={() => switchGoalType(type)}
+                    activeOpacity={0.7}
+                  >
+                    <Icon
+                      name={type === "steps" ? "walk" : "map-marker-distance"}
+                      size={13}
+                      color={goalType === type ? Theme.accent : Theme.textMuted}
+                    />
+                    <Text style={[styles.goalTypeText, goalType === type && styles.goalTypeTextActive]}>
+                      {type}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <View style={[styles.goalEditor, goalError && styles.goalEditorError]}>
+                <TextInput
+                  style={styles.goalInput}
+                  value={goalInput}
+                  onChangeText={(t) => {
+                    setGoalInput(t);
+                    if (goalError) setGoalError(null);
+                  }}
+                  placeholder={goalType === "steps" ? "Step count" : `Distance in ${unit}`}
+                  placeholderTextColor={Theme.textMuted}
+                  keyboardType={goalType === "steps" ? "number-pad" : "decimal-pad"}
+                  autoFocus
+                  selectTextOnFocus
+                  returnKeyType="done"
+                  onSubmitEditing={saveGoal}
+                />
+                {goalType === "distance" ? (
+                  <TouchableOpacity
+                    style={styles.unitToggle}
+                    onPress={toggleUnit}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.unitToggleText}>{unit}</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <View style={styles.unitToggle}>
+                    <Text style={styles.unitToggleText}>steps</Text>
+                  </View>
+                )}
+                <TouchableOpacity
+                  style={styles.goalEditorBtn}
+                  onPress={saveGoal}
+                  activeOpacity={0.7}
+                >
+                  <Icon name="check" size={18} color={Theme.accent} />
+                </TouchableOpacity>
+                {activeTarget !== null && (
+                  <TouchableOpacity
+                    style={styles.goalEditorBtn}
+                    onPress={clearGoal}
+                    activeOpacity={0.7}
+                  >
+                    <Icon name="close" size={18} color={Theme.danger} />
+                  </TouchableOpacity>
+                )}
+              </View>
+              {goalError && (
+                <Text style={styles.goalErrorText}>{goalError}</Text>
+              )}
+            </View>
+          </View>
+        </>
       )}
     </SafeAreaView>
   );
@@ -454,7 +776,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 12,
     right: 12,
-    backgroundColor: "rgba(22,22,22,0.85)",
+    backgroundColor: "rgba(28,28,31,0.85)",
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 16,
@@ -462,7 +784,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   statusPillActive: {
-    backgroundColor: "rgba(0,230,118,0.15)",
+    backgroundColor: "rgba(0,217,255,0.15)",
   },
   statusDot: {
     width: 7,
@@ -487,7 +809,7 @@ const styles = StyleSheet.create({
     position: "absolute",
     top: 12,
     left: 12,
-    backgroundColor: "rgba(22,22,22,0.85)",
+    backgroundColor: "rgba(28,28,31,0.85)",
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 14,
@@ -571,6 +893,173 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: Theme.textMuted,
   },
+  goalContainer: {
+    paddingHorizontal: 24,
+    paddingBottom: 12,
+    alignItems: "center",
+    minHeight: 36,
+    justifyContent: "center",
+  },
+  setGoalButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Theme.border,
+    backgroundColor: Theme.surface,
+  },
+  setGoalText: {
+    color: Theme.textSecondary,
+    fontSize: 12,
+    fontWeight: "500",
+    letterSpacing: 0.5,
+  },
+  goalChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: "rgba(0,217,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(0,217,255,0.25)",
+  },
+  goalChipText: {
+    color: Theme.text,
+    fontSize: 13,
+    fontWeight: "500",
+    fontVariant: ["tabular-nums"],
+  },
+  goalEditorBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    zIndex: 10,
+  },
+  goalEditorOverlay: {
+    position: "absolute",
+    top: 72,
+    left: 24,
+    right: 24,
+    alignItems: "center",
+    zIndex: 11,
+  },
+  goalEditorWrap: {
+    alignItems: "center",
+  },
+  goalTypeRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginBottom: 8,
+  },
+  goalTypeChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Theme.border,
+    backgroundColor: Theme.surface,
+  },
+  goalTypeChipActive: {
+    backgroundColor: "rgba(0,217,255,0.08)",
+    borderColor: "rgba(0,217,255,0.25)",
+  },
+  goalTypeText: {
+    color: Theme.textMuted,
+    fontSize: 11,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  goalTypeTextActive: {
+    color: Theme.accent,
+  },
+  goalEditor: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: Theme.surface,
+    borderWidth: 1,
+    borderColor: Theme.border,
+    borderRadius: 18,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  goalEditorError: {
+    borderColor: Theme.danger,
+  },
+  goalErrorText: {
+    color: Theme.danger,
+    fontSize: 11,
+    marginTop: 4,
+    letterSpacing: 0.3,
+  },
+  goalInput: {
+    color: Theme.text,
+    fontSize: 14,
+    minWidth: 80,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    fontVariant: ["tabular-nums"],
+  },
+  unitToggle: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    backgroundColor: Theme.surfaceLight,
+  },
+  unitToggleText: {
+    color: Theme.accent,
+    fontSize: 12,
+    fontWeight: "600",
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  goalEditorBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: Theme.surfaceLight,
+  },
+  goalProgressWrap: {
+    width: "100%",
+  },
+  goalProgressLabels: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "baseline",
+    marginBottom: 6,
+  },
+  goalProgressText: {
+    color: Theme.text,
+    fontSize: 13,
+    fontWeight: "500",
+    fontVariant: ["tabular-nums"],
+  },
+  goalProgressRemaining: {
+    color: Theme.textMuted,
+    fontSize: 11,
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  progressTrack: {
+    height: 4,
+    backgroundColor: Theme.border,
+    borderRadius: 2,
+    overflow: "hidden",
+  },
+  progressFill: {
+    height: "100%",
+    backgroundColor: Theme.accent,
+  },
   controls: {
     flexDirection: "row",
     alignItems: "center",
@@ -613,10 +1102,5 @@ const styles = StyleSheet.create({
     color: Theme.danger,
     fontSize: 13,
     textAlign: "center",
-  },
-  offscreen: {
-    position: "absolute",
-    left: -9999,
-    top: -9999,
   },
 });

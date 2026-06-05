@@ -11,25 +11,25 @@ export const Colors = {
   },
   dark: {
     text: '#F5F5F5',
-    background: '#0A0A0A',
-    tint: '#00E676',
-    icon: '#666',
-    tabIconDefault: '#555',
-    tabIconSelected: '#00E676',
+    background: '#121214',
+    tint: '#00D9FF',
+    icon: '#6E6E73',
+    tabIconDefault: '#5C5C61',
+    tabIconSelected: '#00D9FF',
   },
 };
 
 // Shared design tokens for the modern dark UI
 export const Theme = {
-  bg: '#0A0A0A',
-  surface: '#161616',
-  surfaceLight: '#1E1E1E',
-  border: '#222',
+  bg: '#121214',
+  surface: '#1C1C1F',
+  surfaceLight: '#242428',
+  border: '#2A2A2E',
   text: '#F5F5F5',
-  textSecondary: '#888',
-  textMuted: '#555',
-  accent: '#00E676',      // vibrant green
-  accentDim: '#00C853',
+  textSecondary: '#909095',
+  textMuted: '#5C5C61',
+  accent: '#00D9FF',      // electric cyan
+  accentDim: '#00ACC1',
   danger: '#FF5252',
   dangerDim: '#D32F2F',
   white: '#FFF',
