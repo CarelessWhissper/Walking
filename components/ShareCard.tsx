@@ -17,9 +17,9 @@ export interface ShareCardData {
   photoUri?: string;
 }
 
-export type ShareVariant = "dark" | "photo" | "map";
+export type ShareVariant = "overlay" | "dark" | "photo" | "map";
 
-export const SHARE_VARIANTS: ShareVariant[] = ["dark", "map", "photo"];
+export const SHARE_VARIANTS: ShareVariant[] = ["overlay", "dark", "map", "photo"];
 
 const CARD_WIDTH = 400;
 const CARD_HEIGHT = 711;
@@ -27,6 +27,69 @@ const CARD_HEIGHT = 711;
 interface CardProps {
   data: ShareCardData;
 }
+
+export const ShareCardOverlay = forwardRef<View, CardProps>(
+  function ShareCardOverlay({ data }, ref) {
+    const path = useMemo(() => buildRoutePath(data.locations), [data.locations]);
+    return (
+      <View ref={ref} style={styles.card} collapsable={false}>
+        <View style={styles.overlayInner}>
+          <View style={styles.overlayAccentLine} />
+
+          <View style={styles.overlayHero}>
+            <Text style={styles.overlayHeroValue}>{data.distance}</Text>
+            <Text style={styles.overlayHeroUnit}>Kilometers</Text>
+          </View>
+
+          <View style={styles.overlayStats}>
+            <View style={styles.overlayStat}>
+              <Text style={styles.overlayStatValue}>{data.pace}</Text>
+              <Text style={styles.overlayStatLabel}>Pace /km</Text>
+            </View>
+            <View style={styles.overlayStat}>
+              <Text style={styles.overlayStatValue}>{data.duration}</Text>
+              <Text style={styles.overlayStatLabel}>Time</Text>
+            </View>
+            {data.calories != null && data.calories > 0 && (
+              <View style={styles.overlayStat}>
+                <Text style={styles.overlayStatValue}>{data.calories}</Text>
+                <Text style={styles.overlayStatLabel}>Kcal</Text>
+              </View>
+            )}
+          </View>
+
+          <View style={styles.overlayRoute}>
+            {path ? (
+              <Svg
+                width="100%"
+                height="100%"
+                viewBox={`0 0 ${MAP_VB} ${MAP_VB}`}
+                preserveAspectRatio="xMidYMid meet"
+              >
+                <Path
+                  d={path}
+                  stroke={Theme.accent}
+                  strokeWidth={6}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  fill="none"
+                />
+              </Svg>
+            ) : null}
+          </View>
+
+          <View style={styles.overlayFooter}>
+            <View style={styles.overlayBrand}>
+              <Icon name="run" size={16} color={Theme.accent} />
+              <Text style={styles.overlayBrandText}>track</Text>
+            </View>
+            <Text style={styles.overlayDate}>{data.date}</Text>
+          </View>
+        </View>
+      </View>
+    );
+  },
+);
 
 export const ShareCardDark = forwardRef<View, CardProps>(
   function ShareCardDark({ data }, ref) {
@@ -261,8 +324,105 @@ const styles = StyleSheet.create({
   card: {
     width: CARD_WIDTH,
     height: CARD_HEIGHT,
-    backgroundColor: Theme.bg,
+    // Transparent frame so captureRef preserves the alpha channel.
+    // Each variant paints its own fill (gradient / photo / map panel);
+    // the overlay variant stays see-through for a true transparent PNG.
+    backgroundColor: "transparent",
     overflow: "hidden",
+  },
+  // Overlay variant (transparent, Strava-style)
+  overlayInner: {
+    flex: 1,
+    paddingHorizontal: 32,
+    paddingTop: 36,
+    paddingBottom: 30,
+  },
+  overlayAccentLine: {
+    width: 48,
+    height: 4,
+    backgroundColor: Theme.accent,
+    borderRadius: 2,
+    marginBottom: 22,
+  },
+  overlayHero: {
+    marginBottom: 4,
+  },
+  overlayHeroValue: {
+    fontSize: 88,
+    fontWeight: "200",
+    color: "#FFFFFF",
+    letterSpacing: -1,
+    lineHeight: 92,
+    textShadowColor: "rgba(0,0,0,0.45)",
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 8,
+  },
+  overlayHeroUnit: {
+    fontSize: 14,
+    color: "rgba(255,255,255,0.8)",
+    fontWeight: "500",
+    letterSpacing: 4,
+    textTransform: "uppercase",
+    marginTop: 8,
+    textShadowColor: "rgba(0,0,0,0.45)",
+    textShadowRadius: 6,
+  },
+  overlayStats: {
+    flexDirection: "row",
+    gap: 32,
+    marginTop: 26,
+  },
+  overlayStat: {
+    gap: 3,
+  },
+  overlayStatValue: {
+    fontSize: 28,
+    fontWeight: "300",
+    color: "#FFFFFF",
+    fontVariant: ["tabular-nums"],
+    textShadowColor: "rgba(0,0,0,0.45)",
+    textShadowRadius: 6,
+  },
+  overlayStatLabel: {
+    fontSize: 10,
+    color: "rgba(255,255,255,0.65)",
+    fontWeight: "600",
+    letterSpacing: 2,
+    textTransform: "uppercase",
+    textShadowColor: "rgba(0,0,0,0.45)",
+    textShadowRadius: 4,
+  },
+  overlayRoute: {
+    flex: 1,
+    marginVertical: 20,
+  },
+  overlayFooter: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  overlayBrand: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+  },
+  overlayBrandText: {
+    fontSize: 14,
+    color: "#FFFFFF",
+    fontWeight: "700",
+    letterSpacing: 2,
+    textTransform: "uppercase",
+    textShadowColor: "rgba(0,0,0,0.45)",
+    textShadowRadius: 4,
+  },
+  overlayDate: {
+    fontSize: 11,
+    color: "rgba(255,255,255,0.75)",
+    fontWeight: "500",
+    letterSpacing: 1.5,
+    textTransform: "uppercase",
+    textShadowColor: "rgba(0,0,0,0.45)",
+    textShadowRadius: 4,
   },
   // Dark variant
   darkGradient: {

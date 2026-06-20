@@ -32,6 +32,7 @@ import {
   SHARE_VARIANTS,
   ShareCardDark,
   ShareCardMap,
+  ShareCardOverlay,
   ShareCardPhoto,
   ShareCardData,
   ShareVariant,
@@ -53,6 +54,7 @@ export default function ShareScreen() {
   const [busy, setBusy] = useState<"copy" | "download" | "share" | null>(null);
 
   const captureRefs = useRef<Record<ShareVariant, View | null>>({
+    overlay: null,
     dark: null,
     photo: null,
     map: null,
@@ -199,6 +201,8 @@ export default function ShareScreen() {
     const setRef = (node: View | null) => {
       captureRefs.current[v] = node;
     };
+    if (v === "overlay")
+      return <ShareCardOverlay ref={setRef} data={enrichedData} />;
     if (v === "dark") return <ShareCardDark ref={setRef} data={enrichedData} />;
     if (v === "map") return <ShareCardMap ref={setRef} data={enrichedData} />;
     return <ShareCardPhoto ref={setRef} data={enrichedData} />;
