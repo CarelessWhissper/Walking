@@ -38,7 +38,14 @@ export default function TabLayout() {
         name="explore"
         options={{
           title: 'History',
-          tabBarIcon: ({ color, size }) => <Icon name="chart-timeline-variant" size={size} color={color} />,
+          tabBarIcon: ({ color, size }) => <Icon name="history" size={size} color={color} />,
+        }}
+      />
+      <Tabs.Screen
+        name="stats"
+        options={{
+          title: 'Insights',
+          tabBarIcon: ({ color, size }) => <Icon name="chart-box-outline" size={size} color={color} />,
         }}
       />
     </Tabs>

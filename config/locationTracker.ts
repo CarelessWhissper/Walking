@@ -17,6 +17,13 @@ export interface LocationCoords {
   altitudeAccuracy?: number | null;
   heading?: number | null;
   speed?: number | null;
+  timestamp?: number;
+}
+
+export interface Split {
+  km: number; // 1-indexed kilometer
+  seconds: number; // time spent covering this kilometer
+  pace: string; // formatted m:ss per km
 }
 
 export interface LocationTrackingOptions {
@@ -443,4 +450,73 @@ export function calculateAverageSpeed(meters: number, seconds: number): number {
   const km = meters / 1000;
   const hours = seconds / 3600;
   return Number((km / hours).toFixed(1));
+}
+
+/**
+ * Format a per-kilometer duration (in seconds) as m:ss.
+ */
+export function formatPaceFromSeconds(seconds: number): string {
+  if (!isFinite(seconds) || seconds <= 0) return "0:00";
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
+/**
+ * Compute per-kilometer splits from a route. Each split is the time taken to
+ * cover one kilometer, derived from per-point timestamps. Points without
+ * timestamps (e.g. legacy runs) yield empty splits.
+ */
+export function computeSplits(locations: LocationCoords[]): Split[] {
+  if (!locations || locations.length < 2) return [];
+
+  const splits: Split[] = [];
+  let segDist = 0;
+  let kmIndex = 1;
+  let segStartTime = locations[0].timestamp ?? null;
+
+  for (let i = 1; i < locations.length; i++) {
+    const prev = locations[i - 1];
+    const curr = locations[i];
+    const lat1 = prev.latitude ?? prev.lat;
+    const lon1 = prev.longitude ?? prev.lng ?? prev.lon;
+    const lat2 = curr.latitude ?? curr.lat;
+    const lon2 = curr.longitude ?? curr.lng ?? curr.lon;
+    if (lat1 == null || lon1 == null || lat2 == null || lon2 == null) continue;
+
+    segDist += calculateDistance(lat1, lon1, lat2, lon2);
+    const t = curr.timestamp ?? null;
+
+    while (segDist >= 1000) {
+      const seconds =
+        segStartTime != null && t != null ? (t - segStartTime) / 1000 : 0;
+      splits.push({
+        km: kmIndex,
+        seconds: Math.round(seconds),
+        pace: formatPaceFromSeconds(seconds),
+      });
+      kmIndex++;
+      segDist -= 1000;
+      segStartTime = t;
+    }
+  }
+
+  return splits;
+}
+
+/**
+ * Reduce a route to at most `maxPoints` points (keeping first & last) so it can
+ * be persisted compactly without exploding AsyncStorage. Even sampling.
+ */
+export function downsampleRoute(
+  locations: LocationCoords[],
+  maxPoints: number = 400,
+): LocationCoords[] {
+  if (!locations || locations.length <= maxPoints) return locations ?? [];
+  const step = (locations.length - 1) / (maxPoints - 1);
+  const result: LocationCoords[] = [];
+  for (let i = 0; i < maxPoints; i++) {
+    result.push(locations[Math.round(i * step)]);
+  }
+  return result;
 }

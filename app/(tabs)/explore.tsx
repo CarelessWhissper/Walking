@@ -3,8 +3,8 @@ import { ShareCardData } from "@/components/ShareCard";
 import { setPendingShare } from "@/components/shareState";
 import { toast } from "@/components/Toast";
 import { Theme } from "@/constants/theme";
+import { SavedRun, loadRuns, saveRuns } from "@/config/runs";
 import Icon from "@expo/vector-icons/MaterialCommunityIcons";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
 import React, { useCallback, useState } from "react";
@@ -19,19 +19,6 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-interface SavedRun {
-  id: string;
-  date: string;
-  distance: number;
-  duration: number;
-  pace: string;
-  calories?: number;
-  cadence?: number;
-  stepCount?: number;
-  notes?: string;
-  locations?: any[];
-}
-
 export default function HistoryScreen() {
   const [runs, setRuns] = useState<SavedRun[]>([]);
   const [selectedPeriod, setSelectedPeriod] = useState<
@@ -45,22 +32,15 @@ export default function HistoryScreen() {
     totalCalories: 0,
   });
 
-  const loadRuns = async () => {
-    try {
-      const savedRuns = await AsyncStorage.getItem("runs");
-      if (savedRuns) {
-        const parsedRuns = JSON.parse(savedRuns);
-        setRuns(parsedRuns);
-        calculateStats(parsedRuns);
-      }
-    } catch (err) {
-      console.error("Error loading runs:", err);
-    }
+  const refreshRuns = async () => {
+    const parsedRuns = await loadRuns();
+    setRuns(parsedRuns);
+    calculateStats(parsedRuns);
   };
 
   useFocusEffect(
     useCallback(() => {
-      loadRuns();
+      refreshRuns();
     }, []),
   );
 
@@ -124,7 +104,7 @@ export default function HistoryScreen() {
     });
     if (!ok) return;
     const updatedRuns = runs.filter((run) => run.id !== runId);
-    await AsyncStorage.setItem("runs", JSON.stringify(updatedRuns));
+    await saveRuns(updatedRuns);
     setRuns(updatedRuns);
     calculateStats(updatedRuns);
     toast.info("Run deleted");
@@ -185,6 +165,7 @@ export default function HistoryScreen() {
   const renderRunItem = ({ item }: { item: SavedRun }) => (
     <TouchableOpacity
       style={styles.runCard}
+      onPress={() => router.push({ pathname: "/run/[id]", params: { id: item.id } })}
       onLongPress={() => deleteRun(item.id)}
       activeOpacity={0.7}
     >

@@ -2,6 +2,8 @@ import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import 'react-native-reanimated';
+// Registers the background location task at startup (module side-effect).
+import '@/config/backgroundLocation';
 import { ToastHost } from '@/components/Toast';
 import { ConfirmHost } from '@/components/ConfirmSheet';
 import { Theme } from '@/constants/theme';
@@ -28,6 +30,7 @@ export default function RootLayout() {
     <ThemeProvider value={AppTheme}>
       <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen name="run/[id]" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
         <Stack.Screen
           name="share"

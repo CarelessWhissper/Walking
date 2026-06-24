@@ -13,7 +13,13 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import Icon from "@expo/vector-icons/MaterialCommunityIcons";
 import { useLocationTracker } from "@/hooks/useLocationTracker";
-import { LocationCoords } from "@/config/locationTracker";
+import {
+  LocationCoords,
+  computeSplits,
+  downsampleRoute,
+} from "@/config/locationTracker";
+import { loadRuns, saveRuns, SavedRun } from "@/config/runs";
+import { detectPRs } from "@/config/records";
 import {
   MapView,
   Camera,
@@ -321,10 +327,14 @@ export default function HomeScreen() {
     if (locations.length < 10) return;
 
     try {
-      const existingRuns = await AsyncStorage.getItem("runs");
-      const runs = existingRuns ? JSON.parse(existingRuns) : [];
+      const priorRuns = await loadRuns();
+      const splits = computeSplits(locations);
+      const route = downsampleRoute(locations, 400).map((l) => ({
+        latitude: l.latitude,
+        longitude: l.longitude,
+      }));
 
-      const newRun = {
+      const newRun: SavedRun = {
         id: Date.now().toString(),
         date: new Date().toISOString(),
         distance,
@@ -333,12 +343,21 @@ export default function HomeScreen() {
         calories,
         cadence,
         stepCount,
-        locations: locations.slice(-100),
+        splits: splits.map((s) => s.seconds),
+        locations: route,
       };
 
-      runs.push(newRun);
-      await AsyncStorage.setItem("runs", JSON.stringify(runs));
-      toast.success("Run saved", "View it in your history.");
+      await saveRuns([...priorRuns, newRun]);
+
+      const prs = detectPRs(newRun, priorRuns);
+      if (prs.length > 0) {
+        toast.success(
+          prs.length === 1 ? "New personal record!" : "New personal records!",
+          prs.join("  ·  "),
+        );
+      } else {
+        toast.success("Run saved", "View it in your history.");
+      }
     } catch (err) {
       console.error("Error saving run:", err);
       toast.error("Couldn't save run", "Try again in a moment.");

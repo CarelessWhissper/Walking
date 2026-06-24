@@ -79,10 +79,9 @@ export const ShareCardOverlay = forwardRef<View, CardProps>(
           </View>
 
           <View style={styles.overlayFooter}>
-            <View style={styles.overlayBrand}>
-              <Icon name="run" size={16} color={Theme.accent} />
-              <Text style={styles.overlayBrandText}>track</Text>
-            </View>
+            <Text style={styles.overlayToday}>
+              Today&apos;s <Text style={styles.overlayTodayAccent}>Run</Text>
+            </Text>
             <Text style={styles.overlayDate}>{data.date}</Text>
           </View>
         </View>
@@ -138,10 +137,9 @@ export const ShareCardDark = forwardRef<View, CardProps>(
               </View>
             )}
 
-            <View style={styles.brandFooter}>
-              <Icon name="run" size={16} color={Theme.accent} />
-              <Text style={styles.brandText}>track</Text>
-            </View>
+            <Text style={styles.todayBrand}>
+              Today&apos;s <Text style={styles.todayBrandAccent}>Run</Text>
+            </Text>
           </View>
         </LinearGradient>
       </View>
@@ -200,10 +198,9 @@ export const ShareCardPhoto = forwardRef<View, CardProps>(
               )}
             </View>
 
-            <View style={styles.photoBrand}>
-              <Icon name="run" size={14} color={Theme.accent} />
-              <Text style={styles.photoBrandText}>track</Text>
-            </View>
+            <Text style={styles.photoToday}>
+              Today&apos;s <Text style={styles.photoTodayAccent}>Run</Text>
+            </Text>
           </View>
         </LinearGradient>
       </View>
@@ -268,10 +265,9 @@ export const ShareCardMap = forwardRef<View, CardProps>(
             )}
           </View>
 
-          <View style={styles.brandFooter}>
-            <Icon name="run" size={16} color={Theme.accent} />
-            <Text style={styles.brandText}>track</Text>
-          </View>
+          <Text style={[styles.todayBrand, styles.todayBrandMap]}>
+            Today&apos;s <Text style={styles.todayBrandAccent}>Run</Text>
+          </Text>
         </View>
       </View>
     );
@@ -401,19 +397,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  overlayBrand: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 7,
-  },
-  overlayBrandText: {
-    fontSize: 14,
-    color: "#FFFFFF",
-    fontWeight: "700",
-    letterSpacing: 2,
+  overlayToday: {
+    fontSize: 15,
+    color: "rgba(255,255,255,0.92)",
+    fontWeight: "600",
+    letterSpacing: 3,
     textTransform: "uppercase",
     textShadowColor: "rgba(0,0,0,0.45)",
     textShadowRadius: 4,
+  },
+  overlayTodayAccent: {
+    color: Theme.accent,
+    fontWeight: "800",
   },
   overlayDate: {
     fontSize: 11,
@@ -510,19 +505,21 @@ const styles = StyleSheet.create({
     color: "#444",
     fontWeight: "500",
   },
-  brandFooter: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+  todayBrand: {
     alignSelf: "flex-end",
     marginTop: 16,
-  },
-  brandText: {
     fontSize: 14,
     color: "#888",
     fontWeight: "600",
-    letterSpacing: 2,
+    letterSpacing: 3,
     textTransform: "uppercase",
+  },
+  todayBrandAccent: {
+    color: Theme.accent,
+    fontWeight: "800",
+  },
+  todayBrandMap: {
+    alignSelf: "flex-start",
   },
   // Photo variant
   photoBackground: {
@@ -597,18 +594,19 @@ const styles = StyleSheet.create({
     gap: 24,
     flexWrap: "wrap",
   },
-  photoBrand: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+  photoToday: {
     marginTop: 8,
-  },
-  photoBrandText: {
-    fontSize: 13,
-    color: "#FFFFFF",
+    fontSize: 14,
+    color: "rgba(255,255,255,0.92)",
     fontWeight: "700",
-    letterSpacing: 2,
+    letterSpacing: 3,
     textTransform: "uppercase",
+    textShadowColor: "rgba(0,0,0,0.5)",
+    textShadowRadius: 5,
+  },
+  photoTodayAccent: {
+    color: Theme.accent,
+    fontWeight: "800",
   },
   // Map variant
   mapBg: {
