@@ -1,6 +1,7 @@
 import { DarkTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 // Registers the background location task at startup (module side-effect).
 import '@/config/backgroundLocation';
@@ -27,8 +28,9 @@ const AppTheme = {
 
 export default function RootLayout() {
   return (
-    <ThemeProvider value={AppTheme}>
-      <Stack>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider value={AppTheme}>
+        <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="run/[id]" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
@@ -40,10 +42,11 @@ export default function RootLayout() {
             animation: 'slide_from_bottom',
           }}
         />
-      </Stack>
-      <ConfirmHost />
-      <ToastHost />
-      <StatusBar style="light" />
-    </ThemeProvider>
+        </Stack>
+        <ConfirmHost />
+        <ToastHost />
+        <StatusBar style="light" />
+      </ThemeProvider>
+    </GestureHandlerRootView>
   );
 }

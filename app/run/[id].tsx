@@ -20,6 +20,13 @@ import { Theme } from "@/constants/theme";
 import { DARK_MAP_STYLE } from "@/config/mapStyle";
 import { getRun, SavedRun } from "@/config/runs";
 import { formatPaceFromSeconds } from "@/config/locationTracker";
+import {
+  DistanceUnit,
+  formatDistanceIn,
+  formatPaceIn,
+  loadDistanceUnit,
+  paceUnitLabel,
+} from "@/config/format";
 
 function formatTime(seconds: number): string {
   const hrs = Math.floor(seconds / 3600);
@@ -32,20 +39,21 @@ function formatTime(seconds: number): string {
   return `${mins}:${secs.toString().padStart(2, "0")}`;
 }
 
-function formatDistance(meters: number): string {
-  if (meters < 1000) return `${Math.round(meters)} m`;
-  return `${(meters / 1000).toFixed(2)} km`;
-}
-
 export default function RunDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [run, setRun] = useState<SavedRun | null>(null);
   const [loading, setLoading] = useState(true);
+  const [unit, setUnit] = useState<DistanceUnit>("km");
 
   useEffect(() => {
     (async () => {
-      if (id) setRun(await getRun(id));
+      const [loaded, savedUnit] = await Promise.all([
+        id ? getRun(id) : Promise.resolve(null),
+        loadDistanceUnit(),
+      ]);
+      setRun(loaded);
+      setUnit(savedUnit);
       setLoading(false);
     })();
   }, [id]);
@@ -82,9 +90,14 @@ export default function RunDetailScreen() {
     };
   }, [route]);
 
+  // Bars scale to the run's own range (±10% padding) so the shape of the run
+  // appears — negative split, fade, hills (A8).
   const splits = run?.splits ?? [];
   const maxSplit = splits.length > 0 ? Math.max(...splits) : 0;
   const fastestSplit = splits.length > 0 ? Math.min(...splits) : 0;
+  const splitPad = Math.max((maxSplit - fastestSplit) * 0.1, 1);
+  const splitFloor = fastestSplit - splitPad;
+  const splitRange = maxSplit + splitPad - splitFloor;
 
   const dateLabel = run
     ? new Date(run.date).toLocaleDateString("en-US", {
@@ -180,14 +193,19 @@ export default function RunDetailScreen() {
 
           {/* Hero distance */}
           <View style={styles.hero}>
-            <Text style={styles.heroValue}>{formatDistance(run.distance)}</Text>
+            <Text style={styles.heroValue}>
+              {formatDistanceIn(run.distance, unit)}
+            </Text>
             <Text style={styles.heroLabel}>distance</Text>
           </View>
 
           {/* Stat grid */}
           <View style={styles.statGrid}>
             <Stat label="Duration" value={formatTime(run.duration)} />
-            <Stat label="Pace /km" value={run.pace} />
+            <Stat
+              label={`Pace ${paceUnitLabel(unit)}`}
+              value={formatPaceIn(run.duration, run.distance, unit)}
+            />
             {run.calories != null && run.calories > 0 && (
               <Stat label="Calories" value={`${run.calories}`} />
             )}
@@ -202,9 +220,12 @@ export default function RunDetailScreen() {
           {/* Splits */}
           {splits.length > 0 && (
             <View style={styles.splitsSection}>
-              <Text style={styles.sectionTitle}>Splits</Text>
+              <Text style={styles.sectionTitle}>Splits · per km</Text>
               {splits.map((seconds, i) => {
-                const width = maxSplit > 0 ? (seconds / maxSplit) * 100 : 0;
+                const width =
+                  splitRange > 0
+                    ? ((seconds - splitFloor) / splitRange) * 100
+                    : 50;
                 const isFastest = seconds === fastestSplit && splits.length > 1;
                 return (
                   <View key={i} style={styles.splitRow}>
@@ -213,7 +234,7 @@ export default function RunDetailScreen() {
                       <View
                         style={[
                           styles.splitBar,
-                          { width: `${Math.max(width, 6)}%` },
+                          { width: `${Math.min(Math.max(width, 4), 100)}%` },
                           isFastest && styles.splitBarFastest,
                         ]}
                       />
@@ -229,6 +250,16 @@ export default function RunDetailScreen() {
                   </View>
                 );
               })}
+              {splits.length > 1 && (
+                <View style={styles.splitRangeRow}>
+                  <Text style={styles.splitRangeText}>
+                    fastest {formatPaceFromSeconds(fastestSplit)}
+                  </Text>
+                  <Text style={styles.splitRangeText}>
+                    slowest {formatPaceFromSeconds(maxSplit)}
+                  </Text>
+                </View>
+              )}
             </View>
           )}
         </ScrollView>
@@ -358,4 +389,16 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
   splitPaceFastest: { color: Theme.accent, fontWeight: "600" },
+  splitRangeRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginTop: 6,
+    paddingHorizontal: 32,
+  },
+  splitRangeText: {
+    fontSize: 11,
+    color: Theme.textMuted,
+    fontVariant: ["tabular-nums"],
+    letterSpacing: 0.3,
+  },
 });

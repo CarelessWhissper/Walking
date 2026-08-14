@@ -5,6 +5,7 @@ import { Image } from "expo-image";
 import Svg, { Path } from "react-native-svg";
 import Icon from "@expo/vector-icons/MaterialCommunityIcons";
 import { Theme } from "@/constants/theme";
+import { buildRoutePath, ROUTE_VB } from "@/config/routePath";
 
 export interface ShareCardData {
   distance: string;
@@ -15,6 +16,7 @@ export interface ShareCardData {
   cadence?: number;
   locations?: { latitude: number; longitude: number }[];
   photoUri?: string;
+  unit?: "km" | "mi";
 }
 
 export type ShareVariant = "overlay" | "dark" | "photo" | "map";
@@ -38,13 +40,13 @@ export const ShareCardOverlay = forwardRef<View, CardProps>(
 
           <View style={styles.overlayHero}>
             <Text style={styles.overlayHeroValue}>{data.distance}</Text>
-            <Text style={styles.overlayHeroUnit}>Kilometers</Text>
+            <Text style={styles.overlayHeroUnit}>{unitWord(data)}</Text>
           </View>
 
           <View style={styles.overlayStats}>
             <View style={styles.overlayStat}>
               <Text style={styles.overlayStatValue}>{data.pace}</Text>
-              <Text style={styles.overlayStatLabel}>Pace /km</Text>
+              <Text style={styles.overlayStatLabel}>Pace {paceSuffix(data)}</Text>
             </View>
             <View style={styles.overlayStat}>
               <Text style={styles.overlayStatValue}>{data.duration}</Text>
@@ -104,7 +106,7 @@ export const ShareCardDark = forwardRef<View, CardProps>(
 
             <View style={styles.darkHero}>
               <Text style={styles.heroValue}>{data.distance}</Text>
-              <Text style={styles.heroUnit}>kilometers</Text>
+              <Text style={styles.heroUnit}>{unitWord(data).toLowerCase()}</Text>
             </View>
 
             <View style={styles.divider} />
@@ -117,7 +119,7 @@ export const ShareCardDark = forwardRef<View, CardProps>(
               <View style={styles.statSeparator} />
               <View style={styles.statItem}>
                 <Text style={styles.statValue}>{data.pace}</Text>
-                <Text style={styles.statLabel}>Pace /km</Text>
+                <Text style={styles.statLabel}>Pace {paceSuffix(data)}</Text>
               </View>
               {data.calories != null && data.calories > 0 && (
                 <>
@@ -179,12 +181,12 @@ export const ShareCardPhoto = forwardRef<View, CardProps>(
           <View style={styles.photoBottom}>
             <View style={styles.photoStatBlock}>
               <Text style={styles.photoStatLabel}>Distance</Text>
-              <Text style={styles.photoStatValue}>{data.distance} km</Text>
+              <Text style={styles.photoStatValue}>{data.distance} {unitOf(data)}</Text>
             </View>
             <View style={styles.photoStatsRow}>
               <View style={styles.photoStatBlock}>
                 <Text style={styles.photoStatLabel}>Pace</Text>
-                <Text style={styles.photoStatValueSm}>{data.pace} /km</Text>
+                <Text style={styles.photoStatValueSm}>{data.pace} {paceSuffix(data)}</Text>
               </View>
               <View style={styles.photoStatBlock}>
                 <Text style={styles.photoStatLabel}>Time</Text>
@@ -247,7 +249,7 @@ export const ShareCardMap = forwardRef<View, CardProps>(
           <View style={styles.mapStats}>
             <View style={styles.mapStatRow}>
               <Text style={styles.mapStatLabel}>Distance</Text>
-              <Text style={styles.mapStatValue}>{data.distance} km</Text>
+              <Text style={styles.mapStatValue}>{data.distance} {unitOf(data)}</Text>
             </View>
             <View style={styles.mapStatRow}>
               <Text style={styles.mapStatLabel}>Time</Text>
@@ -255,7 +257,7 @@ export const ShareCardMap = forwardRef<View, CardProps>(
             </View>
             <View style={styles.mapStatRow}>
               <Text style={styles.mapStatLabel}>Pace</Text>
-              <Text style={styles.mapStatValue}>{data.pace} /km</Text>
+              <Text style={styles.mapStatValue}>{data.pace} {paceSuffix(data)}</Text>
             </View>
             {data.calories != null && data.calories > 0 && (
               <View style={styles.mapStatRow}>
@@ -274,46 +276,17 @@ export const ShareCardMap = forwardRef<View, CardProps>(
   },
 );
 
-const MAP_VB = 1000;
-const MAP_PAD = 40;
+const MAP_VB = ROUTE_VB;
 
-function buildRoutePath(
-  locations: { latitude: number; longitude: number }[] | undefined,
-): string | null {
-  if (!locations || locations.length < 2) return null;
-
-  let minLat = Infinity,
-    maxLat = -Infinity,
-    minLon = Infinity,
-    maxLon = -Infinity;
-  for (const l of locations) {
-    if (l.latitude < minLat) minLat = l.latitude;
-    if (l.latitude > maxLat) maxLat = l.latitude;
-    if (l.longitude < minLon) minLon = l.longitude;
-    if (l.longitude > maxLon) maxLon = l.longitude;
-  }
-
-  const latRange = Math.max(maxLat - minLat, 1e-6);
-  const lonRange = Math.max(maxLon - minLon, 1e-6);
-  const range = Math.max(latRange, lonRange);
-
-  // Center the smaller axis within the square viewBox
-  const latOffset = (range - latRange) / 2;
-  const lonOffset = (range - lonRange) / 2;
-  const usable = MAP_VB - MAP_PAD * 2;
-
-  const points = locations.map((l) => {
-    const nx = (l.longitude - minLon + lonOffset) / range;
-    const ny = (l.latitude - minLat + latOffset) / range;
-    const x = MAP_PAD + nx * usable;
-    // Invert Y so north is up
-    const y = MAP_PAD + (1 - ny) * usable;
-    return [x, y] as [number, number];
-  });
-
-  return points
-    .map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)} ${p[1].toFixed(1)}`)
-    .join(" ");
+/** "km" | "mi" and "/km" | "/mi" labels, defaulting to metric for legacy data. */
+function unitOf(data: ShareCardData): "km" | "mi" {
+  return data.unit === "mi" ? "mi" : "km";
+}
+function unitWord(data: ShareCardData): string {
+  return unitOf(data) === "mi" ? "Miles" : "Kilometers";
+}
+function paceSuffix(data: ShareCardData): string {
+  return unitOf(data) === "mi" ? "/mi" : "/km";
 }
 
 const styles = StyleSheet.create({

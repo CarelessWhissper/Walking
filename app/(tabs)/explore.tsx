@@ -1,41 +1,53 @@
 import { confirm } from "@/components/ConfirmSheet";
+import { RouteTrace } from "@/components/RouteTrace";
 import { ShareCardData } from "@/components/ShareCard";
 import { setPendingShare } from "@/components/shareState";
 import { toast } from "@/components/Toast";
 import { Theme } from "@/constants/theme";
+import {
+  DistanceUnit,
+  distanceValueIn,
+  formatDistanceIn,
+  formatPaceIn,
+  loadDistanceUnit,
+  paceUnitLabel,
+} from "@/config/format";
 import { SavedRun, loadRuns, saveRuns } from "@/config/runs";
 import Icon from "@expo/vector-icons/MaterialCommunityIcons";
 import { useFocusEffect } from "@react-navigation/native";
+import * as Haptics from "expo-haptics";
 import { useRouter } from "expo-router";
 import React, { useCallback, useState } from "react";
 import {
   FlatList,
+  Modal,
   Platform,
+  Pressable,
   StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import ReanimatedSwipeable from "react-native-gesture-handler/ReanimatedSwipeable";
 import { SafeAreaView } from "react-native-safe-area-context";
+
+type Period = "week" | "month" | "all";
 
 export default function HistoryScreen() {
   const [runs, setRuns] = useState<SavedRun[]>([]);
-  const [selectedPeriod, setSelectedPeriod] = useState<
-    "week" | "month" | "all"
-  >("all");
+  const [selectedPeriod, setSelectedPeriod] = useState<Period>("all");
+  const [unit, setUnit] = useState<DistanceUnit>("km");
+  const [menuFor, setMenuFor] = useState<SavedRun | null>(null);
   const router = useRouter();
-  const [stats, setStats] = useState({
-    totalDistance: 0,
-    totalRuns: 0,
-    avgPace: "0:00",
-    totalCalories: 0,
-  });
 
   const refreshRuns = async () => {
-    const parsedRuns = await loadRuns();
+    const [parsedRuns, savedUnit] = await Promise.all([
+      loadRuns(),
+      loadDistanceUnit(),
+    ]);
     setRuns(parsedRuns);
-    calculateStats(parsedRuns);
+    setUnit(savedUnit);
   };
 
   useFocusEffect(
@@ -43,29 +55,6 @@ export default function HistoryScreen() {
       refreshRuns();
     }, []),
   );
-
-  const calculateStats = (runsData: SavedRun[]) => {
-    if (runsData.length === 0) return;
-
-    const totalDist = runsData.reduce((sum, run) => sum + run.distance, 0);
-    const totalDur = runsData.reduce((sum, run) => sum + run.duration, 0);
-    const totalCals = runsData.reduce(
-      (sum, run) => sum + (run.calories || 0),
-      0,
-    );
-
-    const avgPaceMinPerKm =
-      totalDist > 0 ? totalDur / 60 / (totalDist / 1000) : 0;
-    const avgMins = Math.floor(avgPaceMinPerKm);
-    const avgSecs = Math.round((avgPaceMinPerKm - avgMins) * 60);
-
-    setStats({
-      totalDistance: totalDist,
-      totalRuns: runsData.length,
-      avgPace: `${avgMins}:${avgSecs.toString().padStart(2, "0")}`,
-      totalCalories: totalCals,
-    });
-  };
 
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
@@ -90,12 +79,8 @@ export default function HistoryScreen() {
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
-  const formatDistance = (meters: number) => {
-    if (meters < 1000) return `${Math.round(meters)}m`;
-    return `${(meters / 1000).toFixed(2)} km`;
-  };
-
-  const deleteRun = async (runId: string) => {
+  const deleteRun = async (run: SavedRun) => {
+    setMenuFor(null);
     const ok = await confirm({
       title: "Delete this run?",
       message: "This permanently removes the run from your history.",
@@ -103,10 +88,10 @@ export default function HistoryScreen() {
       destructive: true,
     });
     if (!ok) return;
-    const updatedRuns = runs.filter((run) => run.id !== runId);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+    const updatedRuns = runs.filter((r) => r.id !== run.id);
     await saveRuns(updatedRuns);
     setRuns(updatedRuns);
-    calculateStats(updatedRuns);
     toast.info("Run deleted");
   };
 
@@ -119,15 +104,26 @@ export default function HistoryScreen() {
   };
 
   const filteredRuns = filterRunsByPeriod();
-  const periods: ("week" | "month" | "all")[] = ["week", "month", "all"];
+  const periods: Period[] = ["week", "month", "all"];
+
+  // Summary over the *filtered* set, labeled with its window (A5)
+  const totalDist = filteredRuns.reduce((sum, run) => sum + run.distance, 0);
+  const totalDur = filteredRuns.reduce((sum, run) => sum + run.duration, 0);
+  const totalCals = filteredRuns.reduce(
+    (sum, run) => sum + (run.calories || 0),
+    0,
+  );
+  const avgPace = formatPaceIn(totalDur, totalDist, unit);
+  const periodLabel =
+    selectedPeriod === "week"
+      ? "this week"
+      : selectedPeriod === "month"
+        ? "this month"
+        : "all time";
 
   const handleShareRun = useCallback(
     (item: SavedRun) => {
-      const dist =
-        item.distance >= 1000
-          ? (item.distance / 1000).toFixed(2)
-          : `0.${Math.round(item.distance).toString().padStart(3, "0")}`;
-
+      setMenuFor(null);
       const normalizedLocations = Array.isArray(item.locations)
         ? item.locations
             .map((l: any) => ({
@@ -142,9 +138,9 @@ export default function HistoryScreen() {
         : undefined;
 
       const data: ShareCardData = {
-        distance: dist,
+        distance: distanceValueIn(item.distance, unit),
         duration: formatTime(item.duration),
-        pace: item.pace,
+        pace: formatPaceIn(item.duration, item.distance, unit),
         date: new Date(item.date).toLocaleDateString("en-US", {
           weekday: "long",
           month: "short",
@@ -154,83 +150,96 @@ export default function HistoryScreen() {
         calories: item.calories,
         cadence: item.cadence,
         locations: normalizedLocations,
+        unit,
       };
 
       setPendingShare(data);
       router.push("/share");
     },
-    [router],
+    [router, unit],
   );
 
-  const renderRunItem = ({ item }: { item: SavedRun }) => (
+  const renderSwipeDelete = (item: SavedRun) => (
     <TouchableOpacity
-      style={styles.runCard}
-      onPress={() => router.push({ pathname: "/run/[id]", params: { id: item.id } })}
-      onLongPress={() => deleteRun(item.id)}
-      activeOpacity={0.7}
+      style={styles.swipeDelete}
+      onPress={() => deleteRun(item)}
+      activeOpacity={0.8}
     >
-      <View style={styles.runHeader}>
-        <View>
-          <Text style={styles.runDate}>{formatDate(item.date)}</Text>
-          <Text style={styles.runTime}>
-            {new Date(item.date).toLocaleTimeString("en-US", {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
-          </Text>
-        </View>
-        <TouchableOpacity
-          onPress={() => handleShareRun(item)}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <Icon name="share-variant" size={18} color={Theme.textMuted} />
-        </TouchableOpacity>
-      </View>
-
-      <View style={styles.runMetrics}>
-        <View style={styles.runMetric}>
-          <Text style={styles.runMetricValue}>
-            {formatDistance(item.distance)}
-          </Text>
-          <Text style={styles.runMetricLabel}>dist</Text>
-        </View>
-        <View style={styles.runMetric}>
-          <Text style={styles.runMetricValue}>{formatTime(item.duration)}</Text>
-          <Text style={styles.runMetricLabel}>time</Text>
-        </View>
-        <View style={styles.runMetric}>
-          <Text style={styles.runMetricValue}>{item.pace}</Text>
-          <Text style={styles.runMetricLabel}>pace</Text>
-        </View>
-      </View>
-
-      {/* Extra metrics row for calories, cadence, steps */}
-      {(item.calories || item.cadence || item.stepCount) && (
-        <View style={styles.runExtras}>
-          {item.calories != null && item.calories > 0 && (
-            <View style={styles.runExtra}>
-              <Icon name="fire" size={12} color={Theme.textMuted} />
-              <Text style={styles.runExtraValue}>{item.calories} kcal</Text>
-            </View>
-          )}
-          {item.cadence != null && item.cadence > 0 && (
-            <View style={styles.runExtra}>
-              <Icon name="shoe-print" size={12} color={Theme.textMuted} />
-              <Text style={styles.runExtraValue}>{item.cadence} spm</Text>
-            </View>
-          )}
-          {item.stepCount != null && item.stepCount > 0 && (
-            <View style={styles.runExtra}>
-              <Icon name="walk" size={12} color={Theme.textMuted} />
-              <Text style={styles.runExtraValue}>
-                {item.stepCount.toLocaleString()}
-              </Text>
-            </View>
-          )}
-        </View>
-      )}
+      <Icon name="trash-can-outline" size={20} color={Theme.white} />
     </TouchableOpacity>
   );
+
+  // Metric with the unit as a muted suffix so the numbers align as numbers (A2)
+  const Metric = ({ value, suffix }: { value: string; suffix?: string }) => (
+    <Text style={styles.runMetricValue}>
+      {value}
+      {suffix ? <Text style={styles.runMetricSuffix}> {suffix}</Text> : null}
+    </Text>
+  );
+
+  const renderRunItem = ({ item }: { item: SavedRun }) => {
+    const distParts = formatDistanceIn(item.distance, unit).split(" ");
+    const extras = [
+      item.calories != null && item.calories > 0 ? `${item.calories} kcal` : null,
+      item.cadence != null && item.cadence > 0 ? `${item.cadence} spm` : null,
+      item.stepCount != null && item.stepCount > 0
+        ? `${item.stepCount.toLocaleString()} steps`
+        : null,
+    ].filter(Boolean);
+
+    return (
+      <ReanimatedSwipeable
+        renderRightActions={() => renderSwipeDelete(item)}
+        overshootRight={false}
+        containerStyle={styles.swipeContainer}
+      >
+        <TouchableOpacity
+          style={styles.runCard}
+          onPress={() =>
+            router.push({ pathname: "/run/[id]", params: { id: item.id } })
+          }
+          onLongPress={() => deleteRun(item)}
+          activeOpacity={0.7}
+        >
+          <RouteTrace locations={item.locations} size={56} />
+
+          <View style={styles.runContent}>
+            <View style={styles.runHeader}>
+              <Text style={styles.runDate}>
+                {formatDate(item.date)}
+                <Text style={styles.runTime}>
+                  {"  ·  "}
+                  {new Date(item.date).toLocaleTimeString("en-US", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </Text>
+              </Text>
+              <TouchableOpacity
+                onPress={() => setMenuFor(item)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Icon name="dots-horizontal" size={18} color={Theme.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.runMetrics}>
+              <Metric value={distParts[0]} suffix={distParts[1]} />
+              <Metric value={formatTime(item.duration)} />
+              <Metric
+                value={formatPaceIn(item.duration, item.distance, unit)}
+                suffix={paceUnitLabel(unit)}
+              />
+            </View>
+
+            {extras.length > 0 && (
+              <Text style={styles.runExtrasLine}>{extras.join("  ·  ")}</Text>
+            )}
+          </View>
+        </TouchableOpacity>
+      </ReanimatedSwipeable>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -241,36 +250,7 @@ export default function HistoryScreen() {
         <Text style={styles.headerTitle}>History</Text>
       </View>
 
-      {/* Summary stats */}
-      <View style={styles.summaryRow}>
-        <View style={styles.summaryItem}>
-          <Text style={styles.summaryValue}>{stats.totalRuns}</Text>
-          <Text style={styles.summaryLabel}>runs</Text>
-        </View>
-        <View style={styles.summaryDivider} />
-        <View style={styles.summaryItem}>
-          <Text style={styles.summaryValue}>
-            {formatDistance(stats.totalDistance)}
-          </Text>
-          <Text style={styles.summaryLabel}>total</Text>
-        </View>
-        <View style={styles.summaryDivider} />
-        <View style={styles.summaryItem}>
-          <Text style={styles.summaryValue}>{stats.avgPace}</Text>
-          <Text style={styles.summaryLabel}>avg pace</Text>
-        </View>
-        <View style={styles.summaryDivider} />
-        <View style={styles.summaryItem}>
-          <Text style={styles.summaryValue}>
-            {stats.totalCalories > 0
-              ? stats.totalCalories.toLocaleString()
-              : "—"}
-          </Text>
-          <Text style={styles.summaryLabel}>kcal</Text>
-        </View>
-      </View>
-
-      {/* Period filter pills */}
+      {/* Period filter pills — filter first, then a summary that names its window (A5) */}
       <View style={styles.filterRow}>
         {periods.map((period) => (
           <TouchableOpacity
@@ -293,6 +273,32 @@ export default function HistoryScreen() {
         ))}
       </View>
 
+      {/* Summary stats over the filtered window */}
+      <View style={styles.summaryCard}>
+        <Text style={styles.summaryPeriodLabel}>
+          {periodLabel} · {filteredRuns.length}{" "}
+          {filteredRuns.length === 1 ? "run" : "runs"}
+        </Text>
+        <View style={styles.summaryRow}>
+          <View style={styles.summaryItem}>
+            <Text style={styles.summaryValue}>
+              {distanceValueIn(totalDist, unit)}
+            </Text>
+            <Text style={styles.summaryLabel}>{unit}</Text>
+          </View>
+          <View style={styles.summaryItem}>
+            <Text style={styles.summaryValue}>{avgPace}</Text>
+            <Text style={styles.summaryLabel}>avg pace</Text>
+          </View>
+          <View style={styles.summaryItem}>
+            <Text style={styles.summaryValue}>
+              {totalCals > 0 ? totalCals.toLocaleString() : "—"}
+            </Text>
+            <Text style={styles.summaryLabel}>kcal</Text>
+          </View>
+        </View>
+      </View>
+
       {/* Runs */}
       {filteredRuns.length > 0 ? (
         <FlatList
@@ -304,12 +310,62 @@ export default function HistoryScreen() {
         />
       ) : (
         <View style={styles.emptyContainer}>
-          <Icon name="run-fast" size={48} color={Theme.textMuted} />
-          <Text style={styles.emptyText}>No runs yet</Text>
-          <Text style={styles.emptySubtext}>Your runs will appear here</Text>
+          {/* Ghost run card so the shape of the eventual content is visible (A6) */}
+          <View style={styles.ghostCard}>
+            <View style={styles.ghostTile} />
+            <View style={styles.ghostContent}>
+              <View style={[styles.ghostLine, { width: 90 }]} />
+              <View style={styles.ghostMetrics}>
+                <View style={[styles.ghostLine, styles.ghostNumber]} />
+                <View style={[styles.ghostLine, styles.ghostNumber]} />
+                <View style={[styles.ghostLine, styles.ghostNumber]} />
+              </View>
+            </View>
+          </View>
+          <Text style={styles.emptyText}>
+            {runs.length === 0
+              ? "Your first run starts on the Track tab"
+              : `No runs ${periodLabel}`}
+          </Text>
         </View>
       )}
 
+      {/* Card overflow menu (B2) */}
+      <Modal
+        visible={menuFor != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMenuFor(null)}
+      >
+        <Pressable style={styles.menuBackdrop} onPress={() => setMenuFor(null)}>
+          <View style={styles.menuSheet}>
+            {menuFor && (
+              <Text style={styles.menuTitle}>
+                {formatDate(menuFor.date)} ·{" "}
+                {formatDistanceIn(menuFor.distance, unit)}
+              </Text>
+            )}
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => menuFor && handleShareRun(menuFor)}
+              activeOpacity={0.7}
+            >
+              <Icon name="share-variant" size={18} color={Theme.text} />
+              <Text style={styles.menuItemText}>Share</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => menuFor && deleteRun(menuFor)}
+              activeOpacity={0.7}
+            >
+              <Icon name="trash-can-outline" size={18} color={Theme.danger} />
+              <Text style={[styles.menuItemText, styles.menuItemDanger]}>
+                Delete
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </Pressable>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -330,41 +386,10 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     color: Theme.text,
   },
-  summaryRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginHorizontal: 24,
-    paddingVertical: 20,
-    backgroundColor: Theme.surface,
-    borderRadius: 16,
-    marginBottom: 20,
-  },
-  summaryItem: {
-    flex: 1,
-    alignItems: "center",
-  },
-  summaryValue: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: Theme.text,
-    fontVariant: ["tabular-nums"],
-  },
-  summaryLabel: {
-    fontSize: 11,
-    color: Theme.textMuted,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-    marginTop: 4,
-  },
-  summaryDivider: {
-    width: 1,
-    height: 28,
-    backgroundColor: Theme.border,
-  },
   filterRow: {
     flexDirection: "row",
     paddingHorizontal: 24,
-    marginBottom: 16,
+    marginBottom: 12,
     gap: 8,
   },
   filterPill: {
@@ -385,37 +410,87 @@ const styles = StyleSheet.create({
   filterTextActive: {
     color: Theme.bg,
   },
+  summaryCard: {
+    marginHorizontal: 24,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    backgroundColor: Theme.surface,
+    borderRadius: 16,
+    marginBottom: 20,
+  },
+  summaryPeriodLabel: {
+    fontSize: 10,
+    color: Theme.textMuted,
+    textTransform: "uppercase",
+    letterSpacing: 1.5,
+    fontVariant: ["tabular-nums"],
+    marginBottom: 10,
+  },
+  summaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  summaryItem: {
+    flex: 1,
+  },
+  summaryValue: {
+    fontSize: 20,
+    fontWeight: "600",
+    color: Theme.text,
+    fontVariant: ["tabular-nums"],
+  },
+  summaryLabel: {
+    fontSize: 11,
+    color: Theme.textMuted,
+    textTransform: "uppercase",
+    letterSpacing: 1,
+    marginTop: 4,
+  },
   listContent: {
     paddingHorizontal: 24,
     paddingBottom: 24,
   },
+  swipeContainer: {
+    marginBottom: 10,
+  },
+  swipeDelete: {
+    width: 64,
+    marginLeft: 10,
+    borderRadius: 14,
+    backgroundColor: Theme.dangerDim,
+    justifyContent: "center",
+    alignItems: "center",
+  },
   runCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
     backgroundColor: Theme.surface,
     borderRadius: 14,
-    padding: 16,
-    marginBottom: 10,
+    padding: 14,
+  },
+  runContent: {
+    flex: 1,
   },
   runHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 14,
+    marginBottom: 8,
   },
   runDate: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: "600",
     color: Theme.text,
   },
   runTime: {
-    fontSize: 13,
+    fontSize: 12,
+    fontWeight: "400",
     color: Theme.textMuted,
   },
   runMetrics: {
     flexDirection: "row",
     justifyContent: "space-between",
-  },
-  runMetric: {
-    flex: 1,
   },
   runMetricValue: {
     fontSize: 16,
@@ -423,45 +498,100 @@ const styles = StyleSheet.create({
     color: Theme.text,
     fontVariant: ["tabular-nums"],
   },
-  runMetricLabel: {
+  runMetricSuffix: {
     fontSize: 11,
+    fontWeight: "400",
     color: Theme.textMuted,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    marginTop: 2,
   },
-  runExtras: {
-    flexDirection: "row",
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: Theme.border,
-    gap: 16,
-  },
-  runExtra: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-  },
-  runExtraValue: {
-    fontSize: 12,
+  runExtrasLine: {
+    marginTop: 8,
+    fontSize: 11,
     color: Theme.textSecondary,
+    fontVariant: ["tabular-nums"],
+    letterSpacing: 0.3,
   },
   emptyContainer: {
     flex: 1,
-    justifyContent: "center",
     alignItems: "center",
-    padding: 40,
+    paddingTop: 24,
+    paddingHorizontal: 24,
+  },
+  ghostCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 14,
+    alignSelf: "stretch",
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: Theme.border,
+  },
+  ghostTile: {
+    width: 56,
+    height: 56,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderColor: Theme.border,
+  },
+  ghostContent: {
+    flex: 1,
+    gap: 12,
+  },
+  ghostLine: {
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: Theme.surfaceLight,
+  },
+  ghostMetrics: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  ghostNumber: {
+    width: 48,
+    height: 14,
   },
   emptyText: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: Theme.textSecondary,
-    marginTop: 16,
-  },
-  emptySubtext: {
     fontSize: 14,
+    color: Theme.textSecondary,
+    marginTop: 20,
+    textAlign: "center",
+  },
+  menuBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "flex-end",
+    padding: 16,
+  },
+  menuSheet: {
+    backgroundColor: Theme.surface,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: Theme.border,
+    paddingVertical: 8,
+    marginBottom: 8,
+  },
+  menuTitle: {
+    fontSize: 12,
     color: Theme.textMuted,
-    marginTop: 4,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    letterSpacing: 0.3,
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+  menuItemText: {
+    fontSize: 15,
+    color: Theme.text,
+    fontWeight: "500",
+  },
+  menuItemDanger: {
+    color: Theme.danger,
   },
 });

@@ -50,27 +50,59 @@ export function computeRecords(runs: SavedRun[]): Records {
   }, EMPTY);
 }
 
+export interface PRDetail {
+  label: string;
+  kind: "distance" | "duration";
+  value: number;
+  /** The record this run beat, or null when it's the first of its kind. */
+  previous: number | null;
+}
+
 /**
  * Compare a freshly finished run against the records set by all prior runs and
- * return human-readable labels for any new personal records it sets.
+ * return details (new value + beaten value) for any new personal records.
  */
-export function detectPRs(newRun: SavedRun, priorRuns: SavedRun[]): string[] {
+export function detectPRDetails(
+  newRun: SavedRun,
+  priorRuns: SavedRun[],
+): PRDetail[] {
   const prior = computeRecords(priorRuns);
-  const prs: string[] = [];
+  const prs: PRDetail[] = [];
 
-  if ((newRun.distance || 0) > prior.longestDistance) prs.push("Longest run");
-  if ((newRun.duration || 0) > prior.longestDuration) prs.push("Longest duration");
+  if ((newRun.distance || 0) > prior.longestDistance) {
+    prs.push({
+      label: "Longest run",
+      kind: "distance",
+      value: newRun.distance || 0,
+      previous: prior.longestDistance > 0 ? prior.longestDistance : null,
+    });
+  }
+  if ((newRun.duration || 0) > prior.longestDuration) {
+    prs.push({
+      label: "Longest duration",
+      kind: "duration",
+      value: newRun.duration || 0,
+      previous: prior.longestDuration > 0 ? prior.longestDuration : null,
+    });
+  }
 
   const beats = (
     value: number | null,
     record: number | null,
     label: string,
   ) => {
-    if (value != null && (record == null || value < record)) prs.push(label);
+    if (value != null && (record == null || value < record)) {
+      prs.push({ label, kind: "duration", value, previous: record });
+    }
   };
   beats(bestWindow(newRun.splits, 1), prior.fastest1k, "Fastest 1K");
   beats(bestWindow(newRun.splits, 5), prior.fastest5k, "Fastest 5K");
   beats(bestWindow(newRun.splits, 10), prior.fastest10k, "Fastest 10K");
 
   return prs;
+}
+
+/** Labels-only variant of detectPRDetails. */
+export function detectPRs(newRun: SavedRun, priorRuns: SavedRun[]): string[] {
+  return detectPRDetails(newRun, priorRuns).map((p) => p.label);
 }
